@@ -1,0 +1,17 @@
+[package]
+name = "core-model"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+core-protocol = { workspace = true }
+core-events = { workspace = true }
+core-tool = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+futures = "0.3"
+uuid = { workspace = true }
+tracing = { workspace = true }

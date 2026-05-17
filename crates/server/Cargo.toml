@@ -1,0 +1,18 @@
+[package]
+name = "ai-scaffold-server"
+version.workspace = true
+edition.workspace = true
+description = "AI Scaffold WS Server"
+
+[[bin]]
+name = "ai-scaffold"
+path = "src/main.rs"
+
+[dependencies]
+core-protocol = { workspace = true }
+core-runtime = { workspace = true }
+core-ws = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -1,0 +1,23 @@
+[package]
+name = "core-runtime"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+core-protocol = { workspace = true }
+core-events = { workspace = true }
+core-context = { workspace = true }
+core-tool = { workspace = true }
+core-model = { workspace = true }
+core-session = { workspace = true }
+core-storage = { workspace = true }
+core-trace = { workspace = true }
+core-export = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }

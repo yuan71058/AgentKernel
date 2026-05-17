@@ -1,0 +1,16 @@
+[package]
+name = "core-session"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+core-protocol = { workspace = true }
+core-events = { workspace = true }
+core-context = { workspace = true }
+core-storage = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }

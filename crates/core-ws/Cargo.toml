@@ -1,0 +1,22 @@
+[package]
+name = "core-ws"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+core-protocol = { workspace = true }
+core-events = { workspace = true }
+core-context = { workspace = true }
+core-export = { workspace = true }
+core-runtime = { workspace = true }
+core-model = { workspace = true }
+core-tool = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }

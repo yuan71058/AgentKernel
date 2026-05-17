@@ -1,0 +1,50 @@
+[workspace]
+members = [
+    "crates/core-protocol",
+    "crates/core-events",
+    "crates/core-context",
+    "crates/core-tool",
+    "crates/core-storage",
+    "crates/core-model",
+    "crates/core-session",
+    "crates/core-trace",
+    "crates/core-export",
+    "crates/core-ws",
+    "crates/core-runtime",
+    "crates/server",
+]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+description = "AI Runtime Core — Agent Runtime Kernel"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors"] }
+futures = "0.3"
+tokio-tungstenite = "0.26"
+
+# Internal crates
+core-protocol   = { path = "crates/core-protocol" }
+core-events     = { path = "crates/core-events" }
+core-context    = { path = "crates/core-context" }
+core-tool       = { path = "crates/core-tool" }
+core-storage    = { path = "crates/core-storage" }
+core-model      = { path = "crates/core-model" }
+core-session    = { path = "crates/core-session" }
+core-trace      = { path = "crates/core-trace" }
+core-export     = { path = "crates/core-export" }
+core-ws         = { path = "crates/core-ws" }
+core-runtime    = { path = "crates/core-runtime" }

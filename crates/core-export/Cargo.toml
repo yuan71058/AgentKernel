@@ -1,0 +1,14 @@
+[package]
+name = "core-export"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+core-protocol = { workspace = true }
+core-session = { workspace = true }
+core-trace = { workspace = true }
+core-storage = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
