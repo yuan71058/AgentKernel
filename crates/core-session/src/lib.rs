@@ -23,6 +23,10 @@ pub struct SessionManager {
 
 /// session metadata 中 provider config 的 key
 const META_KEY_PROVIDER: &str = "provider_config";
+/// session metadata 中 system prompt 的 key
+const META_KEY_SYSTEM_PROMPT: &str = "system_prompt";
+/// session metadata 中注册工具列表的 key
+const META_KEY_TOOLS: &str = "tools";
 
 impl SessionManager {
     pub fn new(storage: Arc<dyn Storage>, event_bus: Arc<EventBus>) -> Self {
@@ -108,6 +112,74 @@ impl SessionManager {
         Ok(())
     }
 
+    // ─── Session System Prompt（持久化到 session metadata）──────
+
+    /// 设置 session 级 system prompt（写入 metadata + 持久化）
+    pub async fn set_system_prompt(&self, session_id: &str, prompt: String) -> Result<(), String> {
+        let updated_session = {
+            let mut sessions = self.sessions.write().unwrap();
+            if let Some(session) = sessions.get_mut(session_id) {
+                session.metadata.insert(
+                    META_KEY_SYSTEM_PROMPT.to_string(),
+                    serde_json::Value::String(prompt),
+                );
+                session.updated_at = chrono::Utc::now();
+                Some(session.clone())
+            } else {
+                None
+            }
+        };
+
+        if let Some(session) = updated_session {
+            self.storage.save_session(&session).await?;
+            Ok(())
+        } else {
+            Err(format!("session '{}' not found", session_id))
+        }
+    }
+
+    /// 获取 session 级 system prompt
+    pub fn get_system_prompt(&self, session_id: &str) -> Option<String> {
+        self.sessions.read().unwrap()
+            .get(session_id)
+            .and_then(|s| s.metadata.get(META_KEY_SYSTEM_PROMPT))
+            .and_then(|v| v.as_str().map(String::from))
+    }
+
+    // ─── Session Tools（持久化到 session metadata）──────
+
+    /// 设置 session 已注册工具列表快照（定义 + 注册信息）
+    pub async fn set_session_tools(
+        &self,
+        session_id: &str,
+        tools: serde_json::Value,
+    ) -> Result<(), String> {
+        let updated_session = {
+            let mut sessions = self.sessions.write().unwrap();
+            if let Some(session) = sessions.get_mut(session_id) {
+                session.metadata.insert(META_KEY_TOOLS.to_string(), tools);
+                session.updated_at = chrono::Utc::now();
+                Some(session.clone())
+            } else {
+                None
+            }
+        };
+
+        if let Some(session) = updated_session {
+            self.storage.save_session(&session).await?;
+            Ok(())
+        } else {
+            Err(format!("session '{}' not found", session_id))
+        }
+    }
+
+    /// 获取 session 已注册工具列表快照
+    pub fn get_session_tools(&self, session_id: &str) -> Option<serde_json::Value> {
+        self.sessions.read().unwrap()
+            .get(session_id)
+            .and_then(|s| s.metadata.get(META_KEY_TOOLS).cloned())
+    }
+
     // ─── Session 生命周期 ──────────────────────────────────
 
     /// 创建 Session
@@ -153,6 +225,11 @@ impl SessionManager {
             .with_payload(serde_json::json!({"auto_created": true})));
         info!(session_id = %session_id, "session auto-created");
         Ok(session)
+    }
+
+    /// 从存储层加载 Session 到内存索引（启动加载 session 列表时使用）
+    pub fn load_session(&self, session: Session) {
+        self.sessions.write().unwrap().insert(session.session_id.clone(), session);
     }
 
     /// 获取 Session

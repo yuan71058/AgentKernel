@@ -55,6 +55,9 @@ coverage/
 *.swo
 .DS_Store
 
+# Runtime data
+.aicore/
+
 # Env
 .env
 *.env.local

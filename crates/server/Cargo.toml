@@ -1,16 +1,17 @@
 [package]
-name = "ai-scaffold-server"
+name = "agentkernel-server"
 version.workspace = true
 edition.workspace = true
-description = "AI Scaffold WS Server"
+description = "AgentKernel WS Server"
 
 [[bin]]
-name = "ai-scaffold"
+name = "agentkernel"
 path = "src/main.rs"
 
 [dependencies]
 core-protocol = { workspace = true }
 core-runtime = { workspace = true }
+core-storage = { workspace = true }
 core-ws = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }

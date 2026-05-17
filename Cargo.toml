@@ -18,7 +18,7 @@ resolver = "2"
 [workspace.package]
 version = "1.0.0"
 edition = "2021"
-description = "AI Runtime Core — Agent Runtime Kernel"
+description = "AgentKernel — Event-driven runtime kernel for AI agents"
 license = "MIT"
 
 [workspace.dependencies]

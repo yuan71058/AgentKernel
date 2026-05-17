@@ -59,6 +59,26 @@ impl ContextManager {
         msgs.get(session_id).cloned().unwrap_or_default()
     }
 
+    /// 从存储层加载消息到内存（按需加载 session 时使用）
+    pub fn load_messages(&self, session_id: &str, messages: Vec<Message>) {
+        self.messages.write().unwrap().insert(session_id.to_string(), messages);
+    }
+
+    /// 从存储层加载 ContextState 到内存
+    pub fn load_context_state(&self, session_id: &str, ctx: Option<ContextState>) {
+        let mut contexts = self.contexts.write().unwrap();
+        if let Some(ctx) = ctx {
+            contexts.insert(session_id.to_string(), ctx);
+        } else {
+            contexts.remove(session_id);
+        }
+    }
+
+    /// 从存储层加载 ContextSeed 到内存
+    pub fn load_seeds(&self, session_id: &str, seeds: Vec<ContextSeed>) {
+        self.seeds.write().unwrap().insert(session_id.to_string(), seeds);
+    }
+
     /// 构建上下文视图：根据 ContextState 规则，返回提交给模型的消息列表
     pub fn build_context_view(&self, session_id: &str) -> Vec<Message> {
         let all = self.get_all_messages(session_id);

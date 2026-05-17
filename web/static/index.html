@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Scaffold — Runtime Console</title>
+<title>AgentKernel — Runtime Console</title>
 <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
 <style>
 :root {
@@ -119,6 +119,7 @@ body { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: 13
 .raw-brief .raw-tag { display: inline-block; background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 0 5px; margin: 0 3px; font-size: 10px; color: var(--cyan); }
 .raw-brief .raw-tag.err { color: var(--red); border-color: #5c2a2a; }
 .raw-expand { color: var(--text3); font-size: 10px; flex-shrink: 0; }
+.raw-merge-badge { display: inline-block; background: var(--cyan); color: var(--bg); font-size: 10px; font-weight: 700; padding: 0 6px; border-radius: 8px; min-width: 24px; text-align: center; flex-shrink: 0; }
 .raw-detail { margin-top: 6px; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; overflow-x: auto; max-height: 300px; overflow-y: auto; }
 .raw-detail pre { margin: 0; font-size: 11px; color: var(--text2); white-space: pre-wrap; word-break: break-all; }
 
@@ -168,7 +169,7 @@ select.config-input option { background: var(--bg); color: var(--text); }
   <div class="app">
     <!-- Header -->
     <div class="header">
-      <div class="logo">AI SCAFFOLD <span>RUNTIME CONSOLE</span></div>
+      <div class="logo">AGENTKERNEL <span>RUNTIME CONSOLE</span></div>
       <input class="ws-url" v-model="wsUrl" placeholder="ws://localhost:9991/ws"
              @keyup.enter="connected ? disconnect() : connect()">
       <div class="status">
@@ -190,6 +191,15 @@ select.config-input option { background: var(--bg); color: var(--text); }
           <div style="display:flex;gap:8px;align-items:center">
             <input v-model="sessionId" placeholder="session_id"
                    style="width:140px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:3px 8px;color:var(--text);font-size:11px;font-family:inherit;outline:none;">
+            <select v-model="selectedSessionId" @change="selectSession(selectedSessionId)"
+                    :disabled="!connected"
+                    style="width:190px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:3px 8px;color:var(--text);font-size:11px;font-family:inherit;outline:none;">
+              <option value="">选择已有 Session...</option>
+              <option v-for="s in sessions" :key="s.session_id" :value="s.session_id">
+                {{ s.session_id }} · {{ s.title || '未命名' }} · {{ s.message_count || 0 }}条
+              </option>
+            </select>
+            <button class="btn" @click="loadSessions" :disabled="!connected" style="padding:3px 10px;font-size:10px">刷新会话</button>
             <button class="btn" @click="chatMessages=[]" style="padding:3px 10px;font-size:10px">清空</button>
           </div>
         </div>
@@ -230,6 +240,7 @@ select.config-input option { background: var(--bg); color: var(--text); }
             原始消息 <span class="tab-badge" v-if="rawMessages.length">{{ rawMessages.length }}</span>
           </div>
           <div class="tab" :class="{active: rightTab==='stats'}" @click="rightTab='stats'">统计</div>
+          <div class="tab" :class="{active: rightTab==='prompt'}" @click="rightTab='prompt'">提示词</div>
           <div class="tab" :class="{active: rightTab==='config'}" @click="rightTab='config'">配置</div>
         </div>
 
@@ -251,7 +262,7 @@ select.config-input option { background: var(--bg); color: var(--text); }
             <template v-for="(e, i) in filteredEvents" :key="i">
               <div class="event-item" :class="{new: e._new}">
                 <span class="event-time">{{ e.time }}</span>
-                <span class="event-type" :class="'evt-' + e.type">{{ e.label }}</span>
+                <span class="event-type" :class="'evt-' + e.type.replace(/\./g, '_')">{{ e.label }}</span>
                 <span class="event-session">{{ e.session || '—' }}</span>
                 <span class="event-payload"><code>{{ e.summary }}</code></span>
               </div>
@@ -262,21 +273,66 @@ select.config-input option { background: var(--bg); color: var(--text); }
         <!-- Tools tab -->
         <template v-if="rightTab==='tools'">
           <div class="stream-header">
-            <h3>已注册工具</h3>
-            <button class="btn" @click="tools=[]" style="padding:3px 10px;font-size:10px">清空</button>
+            <h3>已注册工具 ({{ tools.length }}) · 执行记录 ({{ toolExecLog.length }})</h3>
+            <button class="btn" @click="tools=[];toolExecLog=[]" style="padding:3px 10px;font-size:10px">清空</button>
           </div>
           <div class="tools-body">
-            <template v-if="tools.length === 0">
-              <div class="empty"><div class="empty-icon">🔧</div>暂无注册工具</div>
+            <!-- 预置工具 -->
+            <div style="font-size:11px;color:var(--text2);margin-bottom:8px;font-weight:600;display:flex;align-items:center;justify-content:space-between">
+              <span>🧰 预置工具（手动注册）</span>
+              <div style="display:flex;gap:6px">
+                <button class="btn" @click="registerPresetTools" :disabled="!connected" style="padding:3px 10px;font-size:10px">注册全部预置工具</button>
+                <button class="btn" @click="loadTools" :disabled="!connected" style="padding:3px 10px;font-size:10px">刷新工具配置</button>
+              </div>
+            </div>
+            <template v-for="t in presetTools" :key="'p'+t.name">
+              <div class="tool-card" style="padding:8px 12px">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span class="tool-name">{{ t.name }}</span>
+                  <span class="tool-tag" v-for="tag in t.tags" :key="tag">{{ tag }}</span>
+                  <button class="btn" @click="registerPresetTool(t)" :disabled="!connected" style="margin-left:auto;padding:2px 8px;font-size:10px">注册</button>
+                </div>
+                <div class="tool-desc">{{ t.description }}</div>
+              </div>
             </template>
-            <template v-for="(t, i) in tools" :key="i">
+
+            <!-- 注册的工具 -->
+            <div style="font-size:11px;color:var(--text2);margin:14px 0 8px;font-weight:600">📦 Session 当前工具配置</div>
+            <template v-if="tools.length === 0">
+              <div style="color:var(--text3);font-size:11px;padding:8px 0">暂无注册工具</div>
+            </template>
+            <template v-for="(t, i) in tools" :key="'t'+i">
               <div class="tool-card">
-                <div class="tool-name">{{ t.name }}</div>
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span class="tool-name">{{ t.name }}</span>
+                  <span class="tool-tag" v-for="tag in t.tags" :key="tag">{{ tag }}</span>
+                </div>
                 <div class="tool-desc">{{ t.description }}</div>
                 <div class="tool-meta">
                   <span>client: {{ t.client }}</span>
                   <span>超时: {{ t.timeout }}ms</span>
-                  <span v-for="tag in t.tags" :key="tag" class="tool-tag">{{ tag }}</span>
+                </div>
+              </div>
+            </template>
+
+            <!-- 执行日志 -->
+            <div style="font-size:11px;color:var(--text2);margin:12px 0 8px;font-weight:600">⚡ 执行记录</div>
+            <template v-if="toolExecLog.length === 0">
+              <div style="color:var(--text3);font-size:11px;padding:8px 0">暂无执行记录（AI 调用工具时自动显示）</div>
+            </template>
+            <template v-for="(log, i) in [...toolExecLog].reverse()" :key="'l'+i">
+              <div class="tool-card" style="padding:8px 12px">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span style="font-size:10px;color:var(--text3)">{{ log.time }}</span>
+                  <span class="tool-name" style="font-size:11px">{{ log.tool }}</span>
+                  <span :style="{color: log.ok ? 'var(--green)' : 'var(--red)', fontSize:'10px'}">{{ log.ok ? '✓ 成功' : '✗ 失败' }}</span>
+                  <span style="font-size:10px;color:var(--text3)">{{ log.elapsed }}ms</span>
+                </div>
+                <div style="font-size:10.5px;color:var(--text2);margin-top:3px">
+                  输入: <code style="background:var(--bg);padding:1px 4px;border-radius:3px;color:var(--cyan)">{{ log.input }}</code>
+                </div>
+                <div style="font-size:10.5px;margin-top:2px" :style="{color: log.ok ? 'var(--text)' : 'var(--red)'}">
+                  结果: {{ log.result }}
                 </div>
               </div>
             </template>
@@ -301,11 +357,22 @@ select.config-input option { background: var(--bg); color: var(--text); }
                   <span class="event-time">{{ m.time }}</span>
                   <span class="raw-dir" :class="m.dir">{{ m.dir === 'in' ? '←' : '→' }}</span>
                   <span class="raw-label" :style="{color: m.dir==='in' ? 'var(--green)' : 'var(--orange)'}">{{ m.label }}</span>
-                  <span class="raw-brief" v-html="m.brief"></span>
+                  <!-- 合并计数徽章 -->
+                  <span v-if="m._merged && m.count > 1" class="raw-merge-badge">× {{ m.count }}</span>
+                  <span class="raw-brief" v-if="!m._merged" v-html="m.brief"></span>
+                  <span class="raw-brief" v-else>已接收 {{ m.count }} 条流式增量</span>
                   <span class="raw-expand">{{ m._expanded ? '▼' : '▶' }}</span>
                 </div>
-                <div class="raw-detail" v-if="m._expanded">
+                <!-- 普通展开 -->
+                <div class="raw-detail" v-if="m._expanded && !m._merged">
                   <pre>{{ m.data }}</pre>
+                </div>
+                <!-- 合并展开：列出每条 delta -->
+                <div class="raw-detail" v-if="m._expanded && m._merged" style="max-height:400px">
+                  <div v-for="(child, ci) in m.children" :key="ci" style="border-bottom:1px solid var(--border);padding:4px 0;margin-bottom:4px">
+                    <div style="font-size:10px;color:var(--text3)">{{ child.time }} #{{ ci + 1 }}</div>
+                    <pre style="font-size:10.5px">{{ child.data }}</pre>
+                  </div>
                 </div>
               </div>
             </template>
@@ -323,6 +390,22 @@ select.config-input option { background: var(--bg); color: var(--text); }
             <div class="stat-row"><span class="stat-label">已注册工具</span><span class="stat-value">{{ tools.length }}</span></div>
             <div class="stat-row"><span class="stat-label">对话消息数</span><span class="stat-value">{{ chatMessages.length }}</span></div>
             <div class="stat-row"><span class="stat-label">WS URL</span><span class="stat-value">{{ wsUrl }}</span></div>
+          </div>
+        </template>
+
+        <!-- Prompt tab -->
+        <template v-if="rightTab==='prompt'">
+          <div class="config-body">
+            <div class="config-section">
+              <div class="config-title">系统提示词 <span style="font-size:10px;color:var(--text3);font-weight:400">（Session 级覆盖）</span></div>
+              <textarea class="config-input" v-model="systemPrompt" style="min-height:260px;resize:vertical;line-height:1.5" placeholder="输入当前 session 的 system prompt..."></textarea>
+              <div class="config-actions">
+                <button class="btn btn-connect" @click="saveSystemPrompt" :disabled="!connected">保存到 Session</button>
+                <button class="btn" @click="loadSystemPrompt" :disabled="!connected">读取当前</button>
+                <button class="btn" @click="loadTools" :disabled="!connected">刷新工具列表</button>
+              </div>
+              <div class="config-hint" v-if="systemPromptStatus">{{ systemPromptStatus }}</div>
+            </div>
           </div>
         </template>
 
@@ -411,6 +494,8 @@ createApp({
     const sessionId = ref('debug_session');
     const chatInput = ref('');
     const chatMessages = ref([]);
+    const sessions = ref([]);
+    const selectedSessionId = ref('');
     const events = ref([]);
     const rawMessages = ref([]);
     const tools = ref([]);
@@ -432,6 +517,8 @@ createApp({
       temperature: 0,
     });
     const providerStatus = ref('');
+    const systemPrompt = ref('');
+    const systemPromptStatus = ref('');
 
     // 流式文本累积
     const streamingText = ref('');
@@ -443,6 +530,168 @@ createApp({
 
     let ws = null;
     let reqCounter = 0;
+    // 记录发出的命令类型（request_id → command 名），用于响应中文标签
+    const pendingCommands = new Map();
+
+    // ─── 预置工具定义 ──────────────────────────────────────
+    const presetTools = [
+      {
+        name: 'get_time',
+        description: '获取当前时间（北京时间 UTC+8）',
+        schema: { type: 'object', properties: { format: { type: 'string', description: '输出格式: iso / locale / timestamp', default: 'locale' } } },
+        tags: ['builtin', 'time'],
+        execute(input) {
+          const fmt = input.format || 'locale';
+          const now = new Date();
+          if (fmt === 'timestamp') return { ok: true, result: String(Date.now()) };
+          if (fmt === 'iso') return { ok: true, result: now.toISOString() };
+          return { ok: true, result: now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) };
+        }
+      },
+      {
+        name: 'echo',
+        description: '回显输入内容（调试用）',
+        schema: { type: 'object', properties: { text: { type: 'string', description: '要回显的文本' } }, required: ['text'] },
+        tags: ['builtin', 'debug'],
+        execute(input) { return { ok: true, result: input.text || '' }; }
+      },
+      {
+        name: 'calc',
+        description: '简单数学计算（支持 + - * / % **）',
+        schema: { type: 'object', properties: { expression: { type: 'string', description: '数学表达式，如 "2 + 3 * 4"' } }, required: ['expression'] },
+        tags: ['builtin', 'math'],
+        execute(input) {
+          const expr = (input.expression || '').replace(/[^0-9+\-*/.%()\s]/g, '');
+          if (!expr) return { ok: false, result: '无效表达式' };
+          try {
+            const val = Function('"use strict"; return (' + expr + ')')();
+            return { ok: true, result: String(val) };
+          } catch(e) { return { ok: false, result: '计算错误: ' + e.message }; }
+        }
+      },
+      {
+        name: 'random_number',
+        description: '生成随机整数',
+        schema: { type: 'object', properties: { min: { type: 'integer', default: 1 }, max: { type: 'integer', default: 100 } } },
+        tags: ['builtin', 'random'],
+        execute(input) {
+          const min = Math.ceil(input.min ?? 1);
+          const max = Math.floor(input.max ?? 100);
+          const val = Math.floor(Math.random() * (max - min + 1)) + min;
+          return { ok: true, result: String(val) };
+        }
+      },
+      {
+        name: 'generate_uuid',
+        description: '生成 UUID v4',
+        schema: { type: 'object', properties: {} },
+        tags: ['builtin', 'util'],
+        execute() {
+          const uuid = ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+            (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16));
+          return { ok: true, result: uuid };
+        }
+      },
+      {
+        name: 'json_format',
+        description: '格式化 JSON 字符串',
+        schema: { type: 'object', properties: { json: { type: 'string', description: 'JSON 字符串' }, indent: { type: 'integer', default: 2 } }, required: ['json'] },
+        tags: ['builtin', 'util'],
+        execute(input) {
+          try {
+            const obj = JSON.parse(input.json);
+            return { ok: true, result: JSON.stringify(obj, null, input.indent ?? 2) };
+          } catch(e) { return { ok: false, result: 'JSON 解析错误: ' + e.message }; }
+        }
+      },
+      {
+        name: 'word_count',
+        description: '统计文本字数/词数/行数',
+        schema: { type: 'object', properties: { text: { type: 'string', description: '要统计的文本' } }, required: ['text'] },
+        tags: ['builtin', 'text'],
+        execute(input) {
+          const text = input.text || '';
+          const chars = text.length;
+          const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+          const lines = text.split('\n').length;
+          return { ok: true, result: `字符: ${chars}, 词: ${words}, 行: ${lines}` };
+        }
+      },
+      {
+        name: 'base64',
+        description: 'Base64 编码/解码',
+        schema: { type: 'object', properties: { text: { type: 'string' }, action: { type: 'string', enum: ['encode', 'decode'], default: 'encode' } }, required: ['text'] },
+        tags: ['builtin', 'encoding'],
+        execute(input) {
+          try {
+            if (input.action === 'decode') return { ok: true, result: atob(input.text) };
+            return { ok: true, result: btoa(input.text) };
+          } catch(e) { return { ok: false, result: e.message }; }
+        }
+      },
+    ];
+
+    // 工具注册表（name → tool 定义）
+    const toolRegistry = new Map();
+    presetTools.forEach(t => toolRegistry.set(t.name, t));
+
+    /**
+     * 注册本地工具处理器。
+     * 业务端扩展时只需要关注 execute(input, ctx)，其他 call_id / WS 回包 / 日志由统一入口处理。
+     */
+    function defineClientTool(definition) {
+      if (!definition || !definition.name || typeof definition.execute !== 'function') {
+        throw new Error('defineClientTool requires { name, execute }');
+      }
+      const tool = {
+        description: '',
+        schema: { type: 'object', properties: {} },
+        tags: [],
+        ...definition,
+      };
+      toolRegistry.set(tool.name, tool);
+      return tool;
+    }
+
+    function normalizeToolExecutionResult(value) {
+      if (value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'ok')) {
+        return {
+          ok: value.ok !== false,
+          result: value.result == null ? '' : String(value.result),
+        };
+      }
+      return { ok: true, result: value == null ? '' : String(value) };
+    }
+
+    // 工具执行日志
+    const toolExecLog = ref([]);
+
+    function registerPresetTool(t) {
+      if (!ws || !t) return;
+      const rid = nextReqId();
+      const msg = {
+        command: 'tool.register',
+        request_id: rid,
+        session_id: sessionId.value,
+        payload: {
+          tool_name: t.name,
+          description: t.description,
+          schema: t.schema,
+          client_id: 'web_debug',
+          timeout_ms: 15000,
+          tags: t.tags,
+        }
+      };
+      const out = JSON.stringify(msg);
+      ws.send(out);
+      addRawMessage('out', out);
+      addEvent('tool.registered', sessionId.value, `已发送注册请求: ${t.name}`);
+    }
+
+    function registerPresetTools() {
+      if (!ws) return;
+      presetTools.forEach(t => registerPresetTool(t));
+    }
 
     function nextReqId() { return 'r' + (++reqCounter); }
     function now() { return new Date().toLocaleTimeString('zh-CN', { hour12: false }); }
@@ -455,11 +704,12 @@ createApp({
       ws.onopen = () => {
         connected.value = true;
         addEvent('session_created', 'WS', '连接建立');
-        // 持久化 session_id
-        localStorage.setItem('scaffold_session_id', sessionId.value);
-        localStorage.setItem('scaffold_ws_url', wsUrl.value);
-        // 重连后自动拉取历史
+        // 连接后只查询当前 session 状态，不自动注册工具
+        loadSessions();
         loadSessionHistory();
+        loadProvider();
+        loadSystemPrompt();
+        loadTools();
       };
       ws.onclose = () => {
         connected.value = false;
@@ -513,6 +763,7 @@ createApp({
             const p = msg.payload.provider;
             providerConfig.value.protocol = p.protocol || 'openai';
             providerConfig.value.base_url = p.base_url || '';
+            providerConfig.value.api_key = p.api_key || '';
             providerConfig.value.model = p.model || '';
             providerConfig.value.max_tokens = p.max_tokens || 4096;
             providerConfig.value.temperature = p.temperature || 0;
@@ -525,6 +776,39 @@ createApp({
             providerStatus.value = `已保存: ${p.protocol} / ${p.model}`;
             setTimeout(() => providerStatus.value = '', 4000);
           }
+          // system_prompt.get / set 响应
+          if (msg.success && Object.prototype.hasOwnProperty.call(msg.payload || {}, 'system_prompt')) {
+            systemPrompt.value = msg.payload.system_prompt || '';
+            systemPromptStatus.value = msg.payload.updated
+              ? `已保存 (${msg.payload.is_session_override ? 'Session 覆盖' : '全局默认'})`
+              : `已读取 (${msg.payload.is_session_override ? 'Session 覆盖' : '全局默认'})`;
+            setTimeout(() => systemPromptStatus.value = '', 4000);
+          }
+
+          // tool.list 响应 → 回填工具列表
+          if (msg.success && Array.isArray(msg.payload?.tools)) {
+            tools.value = msg.payload.tools.map(t => ({
+              name: t.name,
+              description: t.description,
+              client: t.client_id || '—',
+              timeout: t.timeout_ms || 30000,
+              tags: t.tags || [],
+              input_schema: t.input_schema || {},
+            }));
+          }
+
+          // tool.register / unregister 响应后刷新 session 工具配置
+          const respCmd = pendingCommands.get(msg.request_id) || '';
+          if (msg.success && (respCmd === 'tool.register' || respCmd === 'tool.unregister')) {
+            loadTools();
+          }
+
+          // session.list 响应 → 回填 session 下拉
+          if (msg.success && Array.isArray(msg.payload?.sessions)) {
+            sessions.value = msg.payload.sessions;
+            selectedSessionId.value = sessionId.value;
+          }
+
           // session.send 响应 → 如果 model.completed 还没来，用 response payload 兜底显示
           if (msg.success && msg.payload?.content && typeof msg.payload.content === 'string') {
             // 只有当最后一条不是 assistant 消息时才兜底推送（避免和 model.completed 或 flushStreaming 重复）
@@ -591,6 +875,80 @@ createApp({
       addRawMessage('out', out);
     }
 
+    function loadSessions() {
+      if (!ws) return;
+      const rid = nextReqId();
+      const msg = {
+        command: 'session.list',
+        request_id: rid,
+        session_id: '',
+        payload: { page: 0, limit: 100 },
+      };
+      const out = JSON.stringify(msg);
+      ws.send(out);
+      addRawMessage('out', out);
+    }
+
+    function selectSession(id) {
+      if (!id || id === sessionId.value) return;
+      sessionId.value = id;
+      chatMessages.value = [];
+      streamingText.value = '';
+      isStreaming.value = false;
+      events.value = [];
+      rawMessages.value = [];
+      toolExecLog.value = [];
+      loadSessionHistory();
+      loadProvider();
+      loadSystemPrompt();
+      loadTools();
+      addEvent('session_created', id, '已切换并加载 session');
+    }
+
+    function loadTools() {
+      if (!ws) return;
+      const rid = nextReqId();
+      const msg = {
+        command: 'tool.list',
+        request_id: rid,
+        session_id: sessionId.value,
+        payload: {},
+      };
+      const out = JSON.stringify(msg);
+      ws.send(out);
+      addRawMessage('out', out);
+    }
+
+    function loadSystemPrompt() {
+      if (!ws) return;
+      const rid = nextReqId();
+      const msg = {
+        command: 'system_prompt.get',
+        request_id: rid,
+        session_id: sessionId.value,
+        payload: {},
+      };
+      const out = JSON.stringify(msg);
+      ws.send(out);
+      addRawMessage('out', out);
+    }
+
+    function saveSystemPrompt() {
+      if (!ws) return;
+      const rid = nextReqId();
+      const msg = {
+        command: 'system_prompt.set',
+        request_id: rid,
+        session_id: sessionId.value,
+        payload: { system_prompt: systemPrompt.value || '' },
+      };
+      const out = JSON.stringify(msg);
+      ws.send(out);
+      addRawMessage('out', out);
+      systemPromptStatus.value = '已发送保存请求...';
+      setTimeout(() => systemPromptStatus.value = '', 3000);
+    }
+
     function sendChat() {
       if (!ws || !chatInput.value.trim()) return;
       const text = chatInput.value.trim();
@@ -622,6 +980,19 @@ createApp({
       rawInput.value = '';
     }
 
+    function sendToolResult(call_id, result, is_error) {
+      if (!ws) return;
+      const msg = {
+        command: 'tool.execute.result',
+        request_id: nextReqId(),
+        session_id: sessionId.value,
+        payload: { call_id, result: String(result), is_error: !!is_error },
+      };
+      const out = JSON.stringify(msg);
+      ws.send(out);
+      addRawMessage('out', out);
+    }
+
     function flushStreaming() {
       // 将正在流式显示的内容刷入正式消息列表（避免 response 和 event 竞争丢失）
       if (isStreaming.value && streamingText.value) {
@@ -632,21 +1003,56 @@ createApp({
       }
     }
 
-    function handleEvent(type, payload) {
-      // tool.call.request → 显示在聊天中
-      if (type === 'tool.call.request') {
-        // 先结束流式
-        if (isStreaming.value && streamingText.value) {
-          chatMessages.value.push({ role: 'assistant', text: streamingText.value, meta: now() });
-          streamingText.value = '';
-          isStreaming.value = false;
+    async function handleToolCallRequest(payload) {
+      const { tool_name, call_id, input } = payload || {};
+      const safeInput = input || {};
+      const tool = toolRegistry.get(tool_name);
+      const startTime = Date.now();
+
+      // 先结束流式，避免工具执行日志插入时和模型增量混在一起
+      flushStreaming();
+
+      let execResult;
+      if (!tool) {
+        execResult = { ok: false, result: `tool '${tool_name}' not found in client registry` };
+      } else {
+        try {
+          const value = await tool.execute(safeInput, {
+            toolName: tool_name,
+            callId: call_id,
+            sessionId: sessionId.value,
+            connectionId: connectionId.value,
+          });
+          execResult = normalizeToolExecutionResult(value);
+        } catch(e) {
+          execResult = { ok: false, result: '执行异常: ' + e.message };
         }
-        chatMessages.value.push({
-          role: 'system',
-          text: `🔧 工具调用: ${payload.tool_name}\n输入: ${JSON.stringify(payload.input)}`,
-          meta: `call_id: ${payload.call_id}`
-        });
-        scrollToChat();
+      }
+
+      const elapsed = Date.now() - startTime;
+      chatMessages.value.push({
+        role: 'system',
+        text: tool
+          ? `🔧 ${tool_name}(${JSON.stringify(safeInput)})\n→ ${execResult.result} [${elapsed}ms]`
+          : `⚠️ 未知工具: ${tool_name}\n输入: ${JSON.stringify(safeInput)}`,
+        meta: `call_id: ${call_id}`
+      });
+
+      toolExecLog.value.push({
+        time: now(), tool: tool_name, input: JSON.stringify(safeInput),
+        result: execResult.result, ok: execResult.ok, elapsed,
+      });
+      if (toolExecLog.value.length > 100) toolExecLog.value.splice(0, toolExecLog.value.length - 100);
+
+      sendToolResult(call_id, execResult.result, !execResult.ok);
+      scrollToChat();
+    }
+
+    function handleEvent(type, payload) {
+      // tool.call.request → 统一工具调用入口；业务端只需要注册工具 execute(input, ctx)
+      if (type === 'tool.call.request') {
+        handleToolCallRequest(payload);
+        return;
       }
       // model.delta → 实时累积流式文本
       if (type === 'model.delta' && payload.delta) {
@@ -677,24 +1083,54 @@ createApp({
       // model.delta → 可以选择实时显示流式内容
     }
 
+    // ─── 事件类型中文标签 ────────────────────────────────
+    function eventLabel(type) {
+      const map = {
+        'model.delta': '模型输出（流式）',
+        'model.completed': '模型完成',
+        'session.created': '会话创建',
+        'session.closed': '会话关闭',
+        'run.started': '推理开始',
+        'run.completed': '推理完成',
+        'tool.call.request': '工具执行请求',
+        'tool.call.result': 'Core 已确认工具结果',
+        'tool.call.error': '工具调用失败',
+        'tool.registered': '工具注册',
+        'context.threshold.reached': '上下文阈值',
+        'context.compaction.applied': '上下文压缩',
+        'prompt.attached': 'Prompt 附加',
+        'error': '错误',
+        'response': '命令响应',
+        'stream': '流数据',
+      };
+      return map[type] || type;
+    }
+
     function summarizeEvent(type, p) {
+      const t = (v) => v;
       switch(type) {
-        case 'model.delta': return `delta: "${(p.delta||'').slice(0,30)}"  [${(p.full_text||'').length} chars]`;
-        case 'model.completed': return `content: "${(p.content||'').slice(0,60)}"`;
-        case 'tool.call.request': return `${p.tool_name}(${JSON.stringify(p.input||{}).slice(0,60)})`;
-        case 'tool.call.result': return `${p.tool_name} → ${(p.result||'').slice(0,60)}  error:${p.is_error}`;
-        case 'tool.registered': return `tool: ${p.tool_name}  client: ${p.client_id}`;
-        case 'session.created': return `title: ${p.title||'—'}`;
-        case 'run.started': return `provider: ${p.provider}  model: ${p.model}`;
-        case 'run.completed': return JSON.stringify(p).slice(0, 80);
-        case 'error': return JSON.stringify(p).slice(0, 100);
-        case 'context.threshold.reached': return `usage: ${p.usage_percent}%  tokens: ${p.estimated_tokens}`;
-        default: return JSON.stringify(p).slice(0, 100);
+        case 'model.delta': return `增量: "${(p.delta||'').slice(0,40)}"`;
+        case 'model.completed': return `内容: "${(p.content||'').slice(0,60)}"`;
+        case 'tool.call.request': return `请求执行业务端工具 ${p.tool_name}，输入: ${JSON.stringify(p.input||{}).slice(0,50)}`;
+        case 'tool.call.result': return `Core 已接收 ${p.tool_name} 结果: ${(p.result||'').slice(0,40)} ${p.is_error?'失败':'成功'}`;
+        case 'tool.call.error': return `${p.tool_name} 错误: ${(p.error||'').slice(0,40)}`;
+        case 'tool.registered': return `工具 ${p.tool_name} 客户端 ${p.client_id}`;
+        case 'session.created': return `标题: ${p.title||p.auto_created?'自动创建':'—'}`;
+        case 'session.closed': return p.reason ? `原因: ${p.reason}` : '';
+        case 'run.started': return `供应商: ${p.provider} 模型: ${p.model}`;
+        case 'run.completed': return `Token: ${p.total_tokens||'—'}`;
+        case 'error': return JSON.stringify(p).slice(0, 80);
+        case 'context.threshold.reached': return `使用率: ${p.usage_percent}% Token: ${p.estimated_tokens}`;
+        case 'context.compaction.applied': return '上下文已压缩';
+        case 'prompt.attached': return p.prompt_name || p.name || '';
+        case 'response': return `${p.success?'成功':'失败'} ${JSON.stringify(p).slice(0,60)}`;
+        case 'stream': return JSON.stringify(p).slice(0, 60);
+        default: return JSON.stringify(p).slice(0, 80);
       }
     }
 
     function addEvent(type, session, summary, runId) {
-      events.value.push({ type, session, summary, runId, time: now(), label: type, _new: true });
+      events.value.push({ type, session, summary, runId, time: now(), label: eventLabel(type), _new: true });
       if (events.value.length > 500) events.value.splice(0, events.value.length - 500);
       nextTick(() => { if (streamBody.value) streamBody.value.scrollTop = streamBody.value.scrollHeight; });
       setTimeout(() => { const e = events.value[events.value.length-1]; if(e) e._new = false; }, 800);
@@ -716,14 +1152,46 @@ createApp({
           }
           const status = msg.success ? '成功' : '失败';
           const cls = msg.success ? '' : 'err';
-          let brief = `${tag(msg.request_id)} ${tag(status, cls)}`;
-          // 尝试提取关键信息
           const p = msg.payload || {};
-          if (p.provider) brief += ` ${tag(p.protocol+'/'+p.model)}`;
+          // 根据 request_id 查找对应的命令类型
+          const cmd = pendingCommands.get(msg.request_id) || '';
+          const cmdLabels = {
+            'provider.update': '更新供应商响应',
+            'provider.get': '获取供应商响应',
+            'session.send': '发送消息响应',
+            'session.messages': '消息历史响应',
+            'session.get': '获取会话响应',
+            'session.info': '会话详情响应',
+            'session.delete': '删除会话响应',
+            'session.clear': '清空上下文响应',
+            'session.list': '会话列表响应',
+            'tool.register': '注册工具响应',
+            'tool.unregister': '注销工具响应',
+            'system_prompt.get': '获取系统提示词响应',
+            'system_prompt.set': '设置系统提示词响应',
+            'tool.list': '工具列表响应',
+            'tool.get': '工具详情响应',
+            'system.stats': '系统统计响应',
+            'context.preview': '上下文预览响应',
+            'context.compaction.apply': '压缩执行响应',
+            'events.pull': '事件拉取响应',
+            'events.subscribe': '事件订阅响应',
+            'run.cancel': '取消推理响应',
+          };
+          const respLabel = cmdLabels[cmd] || '命令响应';
+          let brief = `${tag(msg.request_id)} ${tag(status, cls)}`;
+          // 按命令类型提取关键信息
+          if (p.provider) {
+            const pr = p.provider;
+            brief += ` ${tag((pr.protocol||'')+'/'+(pr.model||''))}`;
+            if (pr.api_key) brief += ` key:${tag(pr.api_key.slice(0,8)+'...')}`;
+            if (p.is_override !== undefined) brief += ` ${tag(p.is_override?'会话覆盖':'全局默认')}`;
+          }
           if (p.messages) brief += ` 加载 ${p.messages.length} 条历史`;
-          if (p.content) brief += ` ${tag('内容: '+JSON.stringify(p.content).slice(0,40))}`;
+          if (p.content) brief += ` ${tag(JSON.stringify(p.content).slice(0,40))}`;
+          if (p.session_id && !p.provider && !p.messages && !p.content) brief += ` ${tag(p.session_id)}`;
           if (p.error) brief += ` ${tag(p.error.slice(0,40), 'err')}`;
-          return { label: '命令响应', brief };
+          return { label: respLabel, brief };
         }
         // Event
         if (msg.type === 'event') {
@@ -736,8 +1204,8 @@ createApp({
             'session.closed':           () => ({ label: '会话关闭', brief: p.reason ? `原因 ${tag(p.reason)}` : '' }),
             'run.started':              () => ({ label: '推理开始', brief: `${tag(p.provider)} ${tag(p.model)}` }),
             'run.completed':            () => ({ label: '推理完成', brief: `耗时 ${tag(p.duration_ms?p.duration_ms+'ms':'—')}` }),
-            'tool.call.request':        () => ({ label: '工具调用请求', brief: `${tag(p.tool_name)} ${JSON.stringify(p.input||{}).slice(0,50)}` }),
-            'tool.call.result':         () => ({ label: '工具调用结果', brief: `${tag(p.tool_name)} → ${(p.result||'').slice(0,40)} ${p.is_error?tag('错误','err'):''}` }),
+            'tool.call.request':        () => ({ label: '工具执行请求', brief: `${tag(p.tool_name)} 输入 ${JSON.stringify(p.input||{}).slice(0,50)}` }),
+            'tool.call.result':         () => ({ label: 'Core 已确认工具结果', brief: `${tag(p.tool_name)} 结果 ${(p.result||'').slice(0,40)} ${p.is_error?tag('错误','err'):tag('已接收')}` }),
             'tool.call.error':          () => ({ label: '工具调用失败', brief: `${tag(p.tool_name)} ${tag((p.error||'').slice(0,40),'err')}` }),
             'tool.registered':          () => ({ label: '工具注册', brief: `${tag(p.tool_name)} 客户端 ${tag(p.client_id)}` }),
             'context.threshold.reached':() => ({ label: '上下文阈值', brief: `使用 ${tag(p.usage_percent+'%')} Token ${tag(p.estimated_tokens)}` }),
@@ -772,6 +1240,11 @@ createApp({
         'provider.get':         () => ({ label: '获取供应商', brief: sid }),
         'tool.register':        () => ({ label: '注册工具', brief: `${tag(p.tool_name)} 客户端 ${tag(p.client_id||'')}` }),
         'tool.unregister':      () => ({ label: '注销工具', brief: tag(p.tool_name) }),
+        'system_prompt.get':     () => ({ label: '获取系统提示词', brief: sid }),
+        'system_prompt.set':     () => ({ label: '设置系统提示词', brief: `${sid} ${tag((p.system_prompt||'').length + ' 字')}` }),
+        'tool.execute.result':  () => ({ label: '提交工具结果', brief: `${sid} call_id ${tag((p.call_id||'').slice(0,16))} ${p.is_error?tag('错误','err'):tag('成功')}` }),
+        'tool.list':             () => ({ label: '获取工具列表', brief: sid }),
+        'tool.get':              () => ({ label: '获取工具详情', brief: tag(p.tool_name) }),
         'system.stats':         () => ({ label: '系统统计', brief: '' }),
         'context.preview':      () => ({ label: '上下文预览', brief: sid }),
         'context.compaction.apply': () => ({ label: '执行压缩', brief: sid }),
@@ -786,6 +1259,53 @@ createApp({
 
     function addRawMessage(dir, data) {
       const { label, brief } = summarizeRaw(dir, data);
+
+      // 记录发出的命令类型（用于响应中文标签）
+      if (dir === 'out') {
+        try {
+          const out = JSON.parse(data);
+          if (out.command && out.request_id) {
+            pendingCommands.set(out.request_id, out.command);
+            // 清理旧记录（防止内存泄漏）
+            if (pendingCommands.size > 200) {
+              const keys = [...pendingCommands.keys()];
+              keys.slice(0, 100).forEach(k => pendingCommands.delete(k));
+            }
+          }
+        } catch {}
+      }
+
+      // 检测是否是连续的 model.delta 事件，如果是则合并到上一条
+      if (dir === 'in') {
+        let parsed;
+        try { parsed = JSON.parse(data); } catch {}
+        if (parsed && parsed.type === 'event' && parsed.event_type === 'model.delta') {
+          const last = rawMessages.value[rawMessages.value.length - 1];
+          if (last && last._merged) {
+            // 合并到已有行
+            last.count++;
+            last.children.push({ data, time: now() });
+            last.brief = `已接收 ${last.count} 条流式增量`;
+            last.data = data; // 最新的 raw 作为主数据
+            last.time = now();
+            nextTick(() => { if (rawBody.value) rawBody.value.scrollTop = rawBody.value.scrollHeight; });
+            return;
+          }
+          // 创建新的可合并行
+          rawMessages.value.push({
+            dir, data, time: now(), label, brief,
+            _new: true, _expanded: false,
+            _merged: true, count: 1,
+            children: [{ data, time: now() }],
+          });
+          if (rawMessages.value.length > 500) rawMessages.value.splice(0, rawMessages.value.length - 500);
+          nextTick(() => { if (rawBody.value) rawBody.value.scrollTop = rawBody.value.scrollHeight; });
+          setTimeout(() => { const m = rawMessages.value[rawMessages.value.length-1]; if(m) m._new = false; }, 800);
+          return;
+        }
+      }
+
+      // 普通消息：直接追加
       rawMessages.value.push({ dir, data, time: now(), label, brief, _new: true, _expanded: false });
       if (rawMessages.value.length > 500) rawMessages.value.splice(0, rawMessages.value.length - 500);
       nextTick(() => { if (rawBody.value) rawBody.value.scrollTop = rawBody.value.scrollHeight; });
@@ -805,23 +1325,6 @@ createApp({
       if (rawFilter.value === 'all') return rawMessages.value;
       return rawMessages.value.filter(m => m.dir === rawFilter.value);
     });
-
-    // Register tool via WS for testing
-    function registerTool() {
-      if (!ws) return;
-      const rid = nextReqId();
-      ws.send(JSON.stringify({
-        command: 'tool.register',
-        request_id: rid,
-        session_id: '',
-        payload: {
-          tool_name: 'test_tool',
-          description: '测试工具',
-          schema: { type: 'object', properties: { query: { type: 'string' } } },
-          client_id: 'web_debug',
-        }
-      }));
-    }
 
     function saveProvider() {
       if (!ws) return;
@@ -863,36 +1366,30 @@ createApp({
       if (t) Object.assign(providerConfig.value, t);
     }
 
-    // 页面加载：恢复 session_id，自动连接
+    // 页面加载：自动连接（不做 localStorage 持久化，网页仅为调试用）
     onMounted(() => {
-      const savedSession = localStorage.getItem('scaffold_session_id');
-      const savedUrl = localStorage.getItem('scaffold_ws_url');
-      if (savedSession) sessionId.value = savedSession;
-      if (savedUrl) wsUrl.value = savedUrl;
-      // 自动连接
       if (wsUrl.value) connect();
-
-      // 页面关闭前清理
       window.addEventListener('beforeunload', () => {
         if (ws) ws.close();
       });
     });
 
-    // session_id 变化时持久化
-    const stopWatch = Vue.watch(sessionId, (val) => {
-      localStorage.setItem('scaffold_session_id', val);
-    });
-
     return {
       wsUrl, connected, connectionId, sessionId,
+      selectedSessionId, sessions,
       chatInput, chatMessages,
-      events, rawMessages, tools,
+      events, rawMessages, tools, toolExecLog, presetTools,
       rightTab, eventFilter, rawFilter, rawInput,
       chatBody, streamBody, rawBody,
       providerConfig, providerStatus,
+      systemPrompt, systemPromptStatus,
       streamingText, isStreaming, autoReconnect,
-      connect, disconnect, sendChat, sendRaw, registerTool,
+      connect, disconnect, sendChat, sendRaw, sendToolResult,
+      defineClientTool, handleToolCallRequest,
+      loadSessions, selectSession,
+      registerPresetTool, registerPresetTools,
       saveProvider, loadProvider, applyTemplate,
+      saveSystemPrompt, loadSystemPrompt, loadTools,
       filteredEvents, filteredRaw,
     };
   }

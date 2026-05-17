@@ -227,7 +227,6 @@ pub enum StreamEventType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventEnvelope {
     pub id: String,
-    #[serde(rename = "type")]
     pub event_type: String,
     pub session_id: String,
     pub run_id: String,

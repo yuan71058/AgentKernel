@@ -124,6 +124,11 @@ impl ToolManager {
         self.definitions.read().unwrap().len()
     }
 
+    /// 获取单个工具定义（含 schema，用于校验）
+    pub fn get_tool(&self, name: &str) -> Option<Tool> {
+        self.definitions.read().unwrap().get(name).cloned()
+    }
+
     /// 获取所有已注册工具名
     pub fn tool_names(&self) -> Vec<String> {
         self.definitions.read().unwrap().keys().cloned().collect()

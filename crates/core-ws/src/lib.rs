@@ -70,4 +70,12 @@ pub mod commands {
     // ─── Events（断线补拉 + 订阅）──────────
     pub const EVENTS_PULL: &str = "events.pull";
     pub const EVENTS_SUBSCRIBE: &str = "events.subscribe";
+
+    // ─── System Prompt ─────────────────────
+    pub const SYSTEM_PROMPT_GET: &str = "system_prompt.get";
+    pub const SYSTEM_PROMPT_SET: &str = "system_prompt.set";
+
+    // ─── Tool List ─────────────────────────
+    pub const TOOL_LIST: &str = "tool.list";
+    pub const TOOL_GET: &str = "tool.get";
 }

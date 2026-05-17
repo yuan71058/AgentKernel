@@ -1,18 +1,19 @@
-//! AI Scaffold WS Server
+//! AgentKernel WS Server
 //!
-//! 启动一个 WebSocket 服务器，通过 AI Runtime Protocol 与客户端交互。
+//! 启动一个 WebSocket 服务器，通过 Agent Runtime Protocol 与客户端交互。
 //!
 //! 用法：
 //!   export OPENAI_API_KEY="sk-..."
-//!   ai-scaffold
+//!   agentkernel
 //!
-//!   ai-scaffold --addr 0.0.0.0:9527 --protocol claude --model claude-sonnet-4-20250514
+//!   agentkernel --addr 0.0.0.0:9991 --protocol claude --model claude-sonnet-4-20250514
 //!
 //! 客户端通过 ws://<addr>/ws 连接，发送 Command 消息进行交互。
 
 use core_protocol::*;
-use core_runtime::Scaffold;
-use core_ws::server::WsServer;
+use core_runtime::AgentKernel;
+use core_storage::FileStorage;
+use core_ws::server::{WsServer, WsToolRouter};
 use std::sync::Arc;
 
 #[tokio::main]
@@ -50,13 +51,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         api_key
     };
 
-    if api_key.is_empty() {
-        eprintln!("错误：请设置 API KEY");
-        eprintln!("  {}=<key> ai-scaffold", default_key_env);
-        eprintln!("或  ai-scaffold --api-key <key>");
-        std::process::exit(1);
-    }
-
     let base_url = get_arg("--base-url", "");
     let base_url = if base_url.is_empty() {
         std::env::var(&format!("{}_BASE_URL", default_key_env.replace("_API_KEY", "")))
@@ -74,6 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let system_prompt = get_arg("--system-prompt", "你是一个有帮助的 AI 助手。");
+    let data_dir = get_arg("--data-dir", ".aicore");
 
     let config = ProviderConfig {
         protocol: protocol.clone(),
@@ -84,16 +79,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     tracing::info!("═══════════════════════════════════════════");
-    tracing::info!("  AI Scaffold — Rust Runtime");
+    tracing::info!("  AgentKernel — Rust Runtime");
     tracing::info!("  协议:  {:?}", protocol);
     tracing::info!("  模型:  {}", model);
     tracing::info!("  地址:  {}", base_url);
+    tracing::info!("  API:   {}", if config.api_key.is_empty() { "未设置（需通过 WS provider.update 配置）" } else { "已设置" });
+    tracing::info!("  存储:  {}", data_dir);
     tracing::info!("  监听:  ws://{}/ws", addr);
     tracing::info!("═══════════════════════════════════════════");
 
-    let scaffold = Arc::new(
-        Scaffold::new(config).with_system_prompt(&system_prompt)
-    );
+    let scaffold = {
+        let storage = Arc::new(FileStorage::new(data_dir.clone()));
+        let s = AgentKernel::with_storage(config, storage).with_system_prompt(&system_prompt);
+        let loaded = s.load_session_index().await.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "load session index failed");
+            0
+        });
+        tracing::info!(sessions = loaded, "session index loaded");
+        let tool_router = Arc::new(WsToolRouter::new(s.event_bus.clone()));
+        Arc::new(s.with_tool_router(tool_router))
+    };
 
     let server = WsServer::new(scaffold);
     server.start(&addr).await?;

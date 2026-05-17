@@ -12,7 +12,7 @@ use crate::{WsMessage, commands};
 use core_context::ContextStats;
 use core_events::event_types::*;
 use core_protocol::*;
-use core_runtime::Scaffold;
+use core_runtime::{AgentKernel, ToolRouter};
 
 use axum::{
     Router,
@@ -24,16 +24,95 @@ use futures::{SinkExt, StreamExt};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc, broadcast};
+use tokio::sync::{Mutex, mpsc, oneshot, broadcast};
 use tracing::{info, warn, debug};
+
+/// WS 工具路由器
+///
+/// 实现 ToolRouter trait，将工具调用路由到 WS 客户端执行。
+/// 通过 oneshot 通道同步等待客户端返回工具执行结果。
+pub struct WsToolRouter {
+    event_bus: Arc<core_events::EventBus>,
+    pending: Arc<Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>>,
+}
+
+impl WsToolRouter {
+    pub fn new(event_bus: Arc<core_events::EventBus>) -> Self {
+        Self {
+            event_bus,
+            pending: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// 解析客户端返回的工具执行结果，唤醒等待中的 execute()
+    pub async fn resolve_result(&self, call_id: &str, result: serde_json::Value) {
+        let mut map = self.pending.lock().await;
+        if let Some(tx) = map.remove(call_id) {
+            let _ = tx.send(result);
+            info!(call_id = %call_id, "tool result resolved");
+        } else {
+            warn!(call_id = %call_id, "no pending tool call found for result");
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ToolRouter for WsToolRouter {
+    async fn execute(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        tool_name: &str,
+        call_id: &str,
+        input: serde_json::Value,
+    ) -> Result<(String, bool), String> {
+        let (tx, rx) = oneshot::channel::<serde_json::Value>();
+
+        // 注册 pending，等待客户端返回结果
+        {
+            let mut map = self.pending.lock().await;
+            map.insert(call_id.to_string(), tx);
+        }
+
+        // 发射工具调用请求事件（事件转发器会推送给 WS 客户端）
+        self.event_bus.emit(
+            EventEnvelope::new(TOOL_CALL_REQUEST, session_id)
+                .with_run_id(run_id)
+                .with_payload(json!({"tool_name": tool_name, "call_id": call_id, "input": input})),
+        );
+
+        info!(call_id = %call_id, tool = %tool_name, "waiting for tool result from client");
+
+        // 等待客户端执行结果（30 秒超时）
+        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+            Ok(Ok(val)) => {
+                let content = val["content"].as_str().unwrap_or("").to_string();
+                let is_error = val["is_error"].as_bool().unwrap_or(false);
+                Ok((content, is_error))
+            }
+            Ok(Err(_)) => {
+                // oneshot sender dropped（连接断开）
+                self.pending.lock().await.remove(call_id);
+                Err("tool result channel closed (client disconnected)".into())
+            }
+            Err(_) => {
+                // 超时
+                self.pending.lock().await.remove(call_id);
+                Err(format!("tool '{}' timed out after 30s", tool_name))
+            }
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any { self }
+}
 
 /// WS 服务器
 pub struct WsServer {
-    pub scaffold: Arc<Scaffold>,
+    pub scaffold: Arc<AgentKernel>,
 }
 
 impl WsServer {
-    pub fn new(scaffold: Arc<Scaffold>) -> Self {
+    pub fn new(scaffold: Arc<AgentKernel>) -> Self {
         Self { scaffold }
     }
 
@@ -57,11 +136,11 @@ impl WsServer {
     }
 }
 
-async fn handle_ws_upgrade(ws: WebSocketUpgrade, scaffold: Arc<Scaffold>) -> impl IntoResponse {
+async fn handle_ws_upgrade(ws: WebSocketUpgrade, scaffold: Arc<AgentKernel>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_connection(socket, scaffold))
 }
 
-async fn handle_connection(socket: WebSocket, scaffold: Arc<Scaffold>) {
+async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
     let conn_id = uuid::Uuid::new_v4().to_string();
     info!(conn_id = %conn_id, "client connected");
 
@@ -91,6 +170,10 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<Scaffold>) {
                 commands::SYSTEM_STATS,
                 commands::CONTEXT_PREVIEW,
                 commands::COMPACTION_APPLY,
+                commands::SYSTEM_PROMPT_GET,
+                commands::SYSTEM_PROMPT_SET,
+                commands::TOOL_LIST,
+                commands::TOOL_GET,
                 "tool.execute.result",
             ]
         }),
@@ -107,10 +190,6 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<Scaffold>) {
             }
         }
     });
-
-    // 工具结果回调通道: call_id -> oneshot sender
-    let pending_tools: Arc<Mutex<HashMap<String, mpsc::Sender<String>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
 
     // 接收任务：从 WebSocket 读取消息并路由
     while let Some(msg) = ws_receiver.next().await {
@@ -141,17 +220,17 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<Scaffold>) {
 
         let tx_clone = tx.clone();
         let scaffold = scaffold.clone();
-        let pending = pending_tools.clone();
 
         match command.as_str() {
             commands::SEND_MESSAGE => {
                 let sid = session_id.clone();
                 let rid = request_id.clone();
                 tokio::spawn(handle_send_message(
-                    scaffold, tx_clone, pending, sid, rid, payload,
+                    scaffold, tx_clone, sid, rid, payload,
                 ));
             }
             "tool.execute.result" => {
+                // 解析客户端返回的工具执行结果，通过 WsToolRouter 唤醒等待中的 runtime
                 let call_id = payload["call_id"].as_str().unwrap_or("").to_string();
                 let result = payload["result"].as_str().unwrap_or("");
                 let is_error = payload["is_error"].as_bool().unwrap_or(false);
@@ -159,22 +238,27 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<Scaffold>) {
                     "content": result,
                     "is_error": is_error,
                 });
-                let mut map = pending.lock().await;
-                if let Some(sender) = map.remove(&call_id) {
-                    let _ = sender.send(serde_json::to_string(&result_payload).unwrap_or_default()).await;
-                    info!(call_id = %call_id, "tool result received");
-                } else {
-                    warn!(call_id = %call_id, "no pending tool call found");
+                if let Some(ref router) = scaffold.tool_router {
+                    if let Some(ws_router) = router.as_any().downcast_ref::<WsToolRouter>() {
+                        ws_router.resolve_result(&call_id, result_payload).await;
+                    } else {
+                        warn!("tool_router is not WsToolRouter, cannot resolve result");
+                    }
                 }
             }
             commands::REGISTER_TOOL => {
-                handle_register_tool(&scaffold, &tx_clone, &request_id, payload).await;
+                handle_register_tool(&scaffold, &tx_clone, &session_id, &request_id, payload).await;
             }
             commands::UNREGISTER_TOOL => {
                 let name = payload["tool_name"].as_str().unwrap_or("");
                 scaffold.unregister_tool(name);
-                send_ok(&tx_clone, &request_id, json!({"unregistered": name})).await;
-                info!(tool = %name, "tool unregistered via ws");
+                if !session_id.is_empty() {
+                    if let Err(e) = persist_session_tools(&scaffold, &session_id).await {
+                        warn!(session_id = %session_id, error = %e, "persist session tools failed");
+                    }
+                }
+                send_ok(&tx_clone, &request_id, json!({"unregistered": name, "session_id": session_id})).await;
+                info!(tool = %name, session_id = %session_id, "tool unregistered via ws");
             }
             commands::UPDATE_PROVIDER => {
                 handle_update_provider(&scaffold, &tx_clone, &session_id, &request_id, payload).await;
@@ -187,9 +271,19 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<Scaffold>) {
                 send_ok(&tx_clone, &request_id, json!({"status": "cancelled"})).await;
             }
             commands::GET_SESSION => {
+                if !session_id.is_empty() {
+                    if let Err(e) = scaffold.load_session_state(&session_id).await {
+                        warn!(session_id = %session_id, error = %e, "load session state failed");
+                    }
+                }
                 handle_get_session(&scaffold, &tx_clone, &session_id, &request_id).await;
             }
             commands::SESSION_INFO => {
+                if !session_id.is_empty() {
+                    if let Err(e) = scaffold.load_session_state(&session_id).await {
+                        warn!(session_id = %session_id, error = %e, "load session state failed");
+                    }
+                }
                 handle_session_info(&scaffold, &tx_clone, &session_id, &request_id).await;
             }
             commands::SESSION_DELETE => {
@@ -199,6 +293,11 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<Scaffold>) {
                 handle_session_clear(&scaffold, &tx_clone, &session_id, &request_id).await;
             }
             commands::SESSION_MESSAGES => {
+                if !session_id.is_empty() {
+                    if let Err(e) = scaffold.load_session_state(&session_id).await {
+                        warn!(session_id = %session_id, error = %e, "load session state failed");
+                    }
+                }
                 handle_session_messages(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
             }
             commands::LIST_SESSIONS => {
@@ -219,9 +318,65 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<Scaffold>) {
             }
             commands::EVENTS_SUBSCRIBE => {
                 handle_events_subscribe(
-                    scaffold.clone(), tx_clone.clone(), pending.clone(),
+                    scaffold.clone(), tx_clone.clone(),
                     &session_id, &request_id, &payload,
                 ).await;
+            }
+            commands::SYSTEM_PROMPT_GET => {
+                if !session_id.is_empty() {
+                    scaffold.session_mgr.get_or_create(&session_id).await.ok();
+                }
+                let session_prompt = if !session_id.is_empty() {
+                    scaffold.session_mgr.get_system_prompt(&session_id)
+                } else {
+                    None
+                };
+                send_ok(&tx_clone, &request_id, json!({
+                    "session_id": session_id,
+                    "system_prompt": session_prompt.clone().unwrap_or_else(|| scaffold.get_system_prompt()),
+                    "is_session_override": session_prompt.is_some(),
+                })).await;
+            }
+            commands::SYSTEM_PROMPT_SET => {
+                let new_prompt = payload["system_prompt"].as_str().unwrap_or("").to_string();
+                if session_id.is_empty() {
+                    scaffold.set_system_prompt(&new_prompt);
+                    send_ok(&tx_clone, &request_id, json!({
+                        "session_id": session_id,
+                        "system_prompt": scaffold.get_system_prompt(),
+                        "is_session_override": false,
+                        "updated": true,
+                    })).await;
+                } else {
+                    scaffold.session_mgr.get_or_create(&session_id).await.ok();
+                    match scaffold.session_mgr.set_system_prompt(&session_id, new_prompt.clone()).await {
+                        Ok(_) => send_ok(&tx_clone, &request_id, json!({
+                            "session_id": session_id,
+                            "system_prompt": new_prompt,
+                            "is_session_override": true,
+                            "updated": true,
+                        })).await,
+                        Err(e) => send_err(&tx_clone, &request_id, &e).await,
+                    }
+                }
+                info!(len = new_prompt.len(), session_id = %session_id, "system prompt updated via ws");
+            }
+            commands::TOOL_LIST => {
+                handle_tool_list(&scaffold, &tx_clone, &session_id, &request_id).await;
+            }
+            commands::TOOL_GET => {
+                let name = payload["tool_name"].as_str().unwrap_or("");
+                if name.is_empty() {
+                    send_err(&tx_clone, &request_id, "tool_name is required").await;
+                } else if let Some(tool) = scaffold.tool_manager.get_tool(name) {
+                    let reg = scaffold.tool_manager.get_registration(name);
+                    send_ok(&tx_clone, &request_id, json!({
+                        "tool": tool,
+                        "registration": reg,
+                    })).await;
+                } else {
+                    send_err(&tx_clone, &request_id, &format!("tool '{}' not found", name)).await;
+                }
             }
             _ => {
                 warn!(command = %command, "unknown command");
@@ -237,9 +392,8 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<Scaffold>) {
 // ─── Command Handlers ──────────────────────────────────────────
 
 async fn handle_send_message(
-    scaffold: Arc<Scaffold>,
+    scaffold: Arc<AgentKernel>,
     tx: mpsc::Sender<WsMessage>,
-    pending_tools: Arc<Mutex<HashMap<String, mpsc::Sender<String>>>>,
     session_id: String,
     request_id: String,
     payload: serde_json::Value,
@@ -265,7 +419,6 @@ async fn handle_send_message(
     let fwd_session = session_id.to_string();
     let fwd_run = run_id.clone();
     let fwd_tx = tx.clone();
-    let fwd_pending = pending_tools.clone();
 
     // 事件转发任务：把 EventBus 中与本次 run 相关的事件实时推给 WS 客户端
     let event_forwarder = tokio::spawn(async move {
@@ -277,16 +430,7 @@ async fn handle_send_message(
                     if !fwd_run.is_empty() && !evt.run_id.is_empty() && evt.run_id != fwd_run {
                         continue;
                     }
-                    // 工具调用请求：注册 pending tool，等待客户端执行
-                    if evt.event_type == TOOL_CALL_REQUEST {
-                        if let Some(call_id) = evt.payload["call_id"].as_str() {
-                            let (result_tx, _result_rx) = mpsc::channel::<String>(1);
-                            fwd_pending.lock().await.insert(call_id.to_string(), result_tx);
-                            info!(call_id = %call_id, "registered pending tool call");
-                            // 发送 tool.call.request 事件给客户端（在下面统一发送）
-                        }
-                    }
-                    // 转发事件
+                    // 转发所有事件（包括 TOOL_CALL_REQUEST，客户端 UI 需要展示）
                     let _ = fwd_tx.send(WsMessage::Event(evt)).await;
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -331,9 +475,54 @@ async fn handle_send_message(
     }
 }
 
-async fn handle_register_tool(
-    scaffold: &Scaffold,
+async fn persist_session_tools(scaffold: &AgentKernel, session_id: &str) -> Result<(), String> {
+    if session_id.is_empty() {
+        return Ok(());
+    }
+    scaffold.session_mgr.get_or_create(session_id).await?;
+    let tools = scaffold.tool_manager.get_tools();
+    let list: Vec<serde_json::Value> = tools.iter().map(|t| {
+        let reg = scaffold.tool_manager.get_registration(&t.name);
+        json!({
+            "tool": t,
+            "registration": reg,
+        })
+    }).collect();
+    scaffold.session_mgr.set_session_tools(session_id, json!(list)).await
+}
+
+async fn handle_tool_list(
+    scaffold: &AgentKernel,
     tx: &mpsc::Sender<WsMessage>,
+    session_id: &str,
+    request_id: &str,
+) {
+    let tools = scaffold.tool_manager.get_tools();
+    let list: Vec<serde_json::Value> = tools.iter().map(|t| {
+        let reg = scaffold.tool_manager.get_registration(&t.name);
+        let empty_tags: Vec<String> = vec![];
+        json!({
+            "name": t.name,
+            "description": t.description,
+            "input_schema": t.input_schema,
+            "client_id": reg.as_ref().map(|r| r.client_id.as_str()).unwrap_or(""),
+            "timeout_ms": reg.as_ref().map(|r| r.timeout_ms).unwrap_or(30_000),
+            "tags": reg.as_ref().map(|r| &r.tags).unwrap_or(&empty_tags),
+        })
+    }).collect();
+
+    send_ok(tx, request_id, json!({
+        "session_id": session_id,
+        "count": list.len(),
+        "tools": list,
+        "persisted_snapshot": if !session_id.is_empty() { scaffold.session_mgr.get_session_tools(session_id) } else { None },
+    })).await;
+}
+
+async fn handle_register_tool(
+    scaffold: &AgentKernel,
+    tx: &mpsc::Sender<WsMessage>,
+    session_id: &str,
     request_id: &str,
     payload: serde_json::Value,
 ) {
@@ -369,15 +558,21 @@ async fn handle_register_tool(
     };
     scaffold.register_tool(tool, reg);
 
-    scaffold.event_bus.emit(EventEnvelope::new(TOOL_REGISTERED, "")
-        .with_payload(json!({"tool_name": name, "client_id": client_id})));
+    if !session_id.is_empty() {
+        if let Err(e) = persist_session_tools(scaffold, session_id).await {
+            warn!(session_id = %session_id, error = %e, "persist session tools failed");
+        }
+    }
 
-    send_ok(tx, request_id, json!({"registered": name})).await;
-    info!(tool = %name, client = %client_id, "tool registered via ws");
+    scaffold.event_bus.emit(EventEnvelope::new(TOOL_REGISTERED, session_id)
+        .with_payload(json!({"tool_name": name, "client_id": client_id, "session_id": session_id})));
+
+    send_ok(tx, request_id, json!({"registered": name, "session_id": session_id})).await;
+    info!(tool = %name, client = %client_id, session_id = %session_id, "tool registered via ws");
 }
 
 async fn handle_get_session(
-    scaffold: &Scaffold,
+    scaffold: &AgentKernel,
     tx: &mpsc::Sender<WsMessage>,
     session_id: &str,
     request_id: &str,
@@ -399,7 +594,7 @@ async fn handle_get_session(
 
 /// session.info — 完整 session 详情（含 session 元数据 + context 统计 + provider 信息）
 async fn handle_session_info(
-    scaffold: &Scaffold,
+    scaffold: &AgentKernel,
     tx: &mpsc::Sender<WsMessage>,
     session_id: &str,
     request_id: &str,
@@ -437,12 +632,14 @@ async fn handle_session_info(
             "usage_percent": stats.usage_percent,
         },
         "provider_override": has_override,
+        "system_prompt_override": scaffold.session_mgr.get_system_prompt(session_id).is_some(),
+        "tool_count": scaffold.tool_manager.tool_names().len(),
     })).await;
 }
 
 /// session.delete — 删除 session（清空 context + 移除 session 记录）
 async fn handle_session_delete(
-    scaffold: &Scaffold,
+    scaffold: &AgentKernel,
     tx: &mpsc::Sender<WsMessage>,
     session_id: &str,
     request_id: &str,
@@ -467,7 +664,7 @@ async fn handle_session_delete(
 
 /// session.clear — 仅清空上下文视图（消息永久保留，符合规则）
 async fn handle_session_clear(
-    scaffold: &Scaffold,
+    scaffold: &AgentKernel,
     tx: &mpsc::Sender<WsMessage>,
     session_id: &str,
     request_id: &str,
@@ -495,7 +692,7 @@ async fn handle_session_clear(
 
 /// session.messages — 分页读取消息历史
 async fn handle_session_messages(
-    scaffold: &Scaffold,
+    scaffold: &AgentKernel,
     tx: &mpsc::Sender<WsMessage>,
     session_id: &str,
     request_id: &str,
@@ -548,7 +745,7 @@ async fn handle_session_messages(
 
 /// session.list — 分页查询 session 列表（系统级，session_id 为空）
 async fn handle_list_sessions(
-    scaffold: &Scaffold,
+    scaffold: &AgentKernel,
     tx: &mpsc::Sender<WsMessage>,
     request_id: &str,
     payload: &serde_json::Value,
@@ -561,18 +758,19 @@ async fn handle_list_sessions(
     let (sessions, total) = scaffold.session_mgr.list_sessions_paged(page, limit, status);
 
     let list: Vec<serde_json::Value> = sessions.iter().map(|s| {
-        let msg_count = scaffold.context_mgr.get_all_messages(&s.session_id).len();
         let stats = scaffold.context_mgr.stats(&s.session_id);
         json!({
             "session_id": s.session_id,
             "type": format!("{:?}", s.session_type).to_lowercase(),
             "title": s.title,
             "status": format!("{:?}", s.status).to_lowercase(),
-            "message_count": msg_count,
+            "message_count": stats.message_count,
             "estimated_tokens": stats.estimated_tokens,
             "provider_override": scaffold.session_mgr.get_provider_override(&s.session_id).is_some(),
+            "system_prompt_override": scaffold.session_mgr.get_system_prompt(&s.session_id).is_some(),
             "created_at": s.created_at.to_rfc3339(),
             "updated_at": s.updated_at.to_rfc3339(),
+            "summary": s.metadata.get("summary").and_then(|v| v.as_str()).unwrap_or(""),
         })
     }).collect();
 
@@ -587,7 +785,7 @@ async fn handle_list_sessions(
 
 /// system.stats — 系统级统计
 async fn handle_system_stats(
-    scaffold: &Scaffold,
+    scaffold: &AgentKernel,
     tx: &mpsc::Sender<WsMessage>,
     request_id: &str,
 ) {
@@ -604,13 +802,13 @@ async fn handle_system_stats(
             "model": config.model,
             "context_window_tokens": config.context_window_tokens,
         },
-        "system_prompt_length": scaffold.system_prompt.len(),
+        "system_prompt_length": scaffold.get_system_prompt().len(),
     })).await;
 }
 
 /// events.pull — 断线补拉：返回 session 中 seq > since_seq 的所有事件
 async fn handle_events_pull(
-    scaffold: &Scaffold,
+    scaffold: &AgentKernel,
     tx: &mpsc::Sender<WsMessage>,
     session_id: &str,
     request_id: &str,
@@ -642,9 +840,8 @@ async fn handle_events_pull(
 
 /// events.subscribe — 订阅实时事件流，可选 since_seq 补拉历史后再切换实时
 async fn handle_events_subscribe(
-    scaffold: Arc<Scaffold>,
+    scaffold: Arc<AgentKernel>,
     tx: mpsc::Sender<WsMessage>,
-    _pending: Arc<Mutex<HashMap<String, mpsc::Sender<String>>>>,
     session_id: &str,
     request_id: &str,
     payload: &serde_json::Value,
@@ -683,7 +880,7 @@ async fn handle_events_subscribe(
 }
 
 async fn handle_context_preview(
-    scaffold: &Scaffold,
+    scaffold: &AgentKernel,
     tx: &mpsc::Sender<WsMessage>,
     session_id: &str,
     request_id: &str,
@@ -702,7 +899,7 @@ async fn handle_context_preview(
 }
 
 async fn handle_update_provider(
-    scaffold: &Scaffold,
+    scaffold: &AgentKernel,
     tx: &mpsc::Sender<WsMessage>,
     session_id: &str,
     request_id: &str,
@@ -765,7 +962,7 @@ async fn handle_update_provider(
 }
 
 async fn handle_get_provider(
-    scaffold: &Scaffold,
+    scaffold: &AgentKernel,
     tx: &mpsc::Sender<WsMessage>,
     session_id: &str,
     request_id: &str,
@@ -783,6 +980,7 @@ async fn handle_get_provider(
         "provider": {
             "protocol": format!("{:?}", config.protocol).to_lowercase(),
             "base_url": config.base_url,
+            "api_key": config.api_key,
             "model": config.model,
             "max_tokens": config.max_tokens,
             "temperature": config.temperature,
@@ -820,7 +1018,7 @@ async fn serve_static(uri: axum::http::Uri) -> impl axum::response::IntoResponse
 
     let candidates: Vec<String> = {
         let mut v = Vec::new();
-        // 从可执行文件往上找（debug/ → target/ → ai-scaffold/）
+        // 从可执行文件往上找（debug/ → target/ → agentkernel/）
         if let Some(ref dir) = exe_dir {
             let mut d = dir.to_path_buf();
             for _ in 0..5 {
