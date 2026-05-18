@@ -423,15 +423,15 @@ select.config-input option { background: var(--bg); color: var(--text); }
             </div>
 
             <div class="config-section">
-              <div class="config-title">手动注入 Seed</div>
+              <div class="config-title">手动注入上下文块</div>
               <div class="config-row">
                 <label>类型</label>
                 <select v-model="contextSeedKind" class="config-input">
-                  <option value="system_memory">System Memory</option>
-                  <option value="compaction_summary">Compaction Summary</option>
-                  <option value="user_preference">User Preference</option>
-                  <option value="world_state">World State</option>
-                  <option value="agent_state">Agent State</option>
+                  <option value="system_memory">系统记忆</option>
+                  <option value="compaction_summary">压缩摘要</option>
+                  <option value="user_preference">用户偏好</option>
+                  <option value="world_state">世界状态</option>
+                  <option value="agent_state">Agent 状态</option>
                 </select>
               </div>
               <textarea class="config-input" v-model="contextSeedContent" style="min-height:90px;resize:vertical" placeholder="这段内容会作为 Context Seed 注入模型输入..."></textarea>

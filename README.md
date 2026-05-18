@@ -35,9 +35,37 @@ AgentKernel 不是聊天 UI，也不是业务 Agent，而是 **Agent Runtime Ker
 
 AgentKernel 采用 **WebSocket** 作为核心双向通信协议，实现状态与控制的完全解耦：
 
-```text
-[ 业务端 Client ]  --- Command (执行指令: 发送消息/注册工具) --->  [ AgentKernel ]
-[ 业务端 Client ]  <--- Event (运行状态: 模型输出/工具请求) ---  [ AgentKernel ]
+```mermaid
+sequenceDiagram
+    participant C as 业务端 Client
+    participant K as AgentKernel
+    participant M as LLM (OpenAI/Claude)
+    
+    Note over C, K: 1. 初始化与配置阶段
+    C->>K: [Command] tool.register (动态注册工具)
+    K-->>C: 持久化 Schema 并准备就绪
+
+    Note over C, M: 2. 用户交互与上下文处理
+    C->>K: [Command] session.send (发送用户提问)
+    K->>K: 消息落盘 / 构建 Active Context View
+
+    Note over K, M: 3. 模型推理与事件流
+    K->>M: 发起请求 (Prompt + Context + Tools)
+    M-->>K: Stream 流式返回
+
+    alt 模型输出普通文本
+        K-->>C: [Event] model.delta (流式推送到前端展示)
+    else 模型触发工具调用 (Tool Call)
+        M-->>K: 返回 tool_calls 意图
+        K-->>C: [Event] tool.call.request (请求业务端执行)
+        Note over C: Client 本地执行业务逻辑
+        C->>K: [Command] tool.execute.result (回传执行结果)
+        K->>M: 携带工具结果再次请求模型
+        M-->>K: 基于工具结果继续推理
+        K-->>C: [Event] model.delta (流式推送到前端展示)
+    end
+
+    K-->>C: [Event] model.completed (单次运行结束)
 ```
 
 ### ✨ 核心特性
