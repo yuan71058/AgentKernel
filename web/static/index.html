@@ -251,8 +251,8 @@ select.config-input option { background: var(--bg); color: var(--text); }
             <span class="filter-chip" :class="{active: eventFilter==='model'}" @click="eventFilter='model'">模型</span>
             <span class="filter-chip" :class="{active: eventFilter==='tool'}" @click="eventFilter='tool'">工具</span>
             <span class="filter-chip" :class="{active: eventFilter==='session'}" @click="eventFilter='session'">会话</span>
+            <span class="filter-chip" :class="{active: eventFilter==='context'}" @click="eventFilter='context'">上下文</span>
             <span class="filter-chip" :class="{active: eventFilter==='error'}" @click="eventFilter='error'">错误</span>
-            <span class="filter-chip" :class="{active: eventFilter==='response'}" @click="eventFilter='response'">响应</span>
             <button class="btn" @click="events=[]" style="padding:2px 8px;font-size:10px;margin-left:auto">清空</button>
           </div>
           <div class="stream-body" ref="streamBody">
@@ -260,11 +260,17 @@ select.config-input option { background: var(--bg); color: var(--text); }
               <div class="empty"><div class="empty-icon">📡</div>等待事件...</div>
             </template>
             <template v-for="(e, i) in filteredEvents" :key="i">
-              <div class="event-item" :class="{new: e._new}">
-                <span class="event-time">{{ e.time }}</span>
-                <span class="event-type" :class="'evt-' + e.type.replace(/\./g, '_')">{{ e.label }}</span>
-                <span class="event-session">{{ e.session || '—' }}</span>
-                <span class="event-payload"><code>{{ e.summary }}</code></span>
+              <div class="raw-card" :class="{new: e._new}" @click="e._expanded = !e._expanded">
+                <div class="raw-card-header">
+                  <span class="event-time">{{ e.time }}</span>
+                  <span class="event-type" :class="'evt-' + e.type.replace(/\./g, '_')">{{ e.label }}</span>
+                  <span class="event-session">{{ e.session || '—' }}</span>
+                  <span class="raw-brief" v-html="e.brief"></span>
+                  <span class="raw-expand">{{ e._expanded ? '▼' : '▶' }}</span>
+                </div>
+                <div class="raw-detail" v-if="e._expanded">
+                  <pre>{{ e.data }}</pre>
+                </div>
               </div>
             </template>
           </div>
@@ -685,7 +691,7 @@ createApp({
       const out = JSON.stringify(msg);
       ws.send(out);
       addRawMessage('out', out);
-      addEvent('tool.registered', sessionId.value, `已发送注册请求: ${t.name}`);
+      addLocalNotice('工具注册', `已发送注册请求: ${t.name}`);
     }
 
     function registerPresetTools() {
@@ -699,11 +705,11 @@ createApp({
     function connect() {
       if (ws) ws.close();
       if (reconnectTimer.value) { clearTimeout(reconnectTimer.value); reconnectTimer.value = null; }
-      try { ws = new WebSocket(wsUrl.value); } catch(e) { addEvent('error', '连接失败', e.message); scheduleReconnect(); return; }
+      try { ws = new WebSocket(wsUrl.value); } catch(e) { addLocalNotice('连接失败', e.message); scheduleReconnect(); return; }
 
       ws.onopen = () => {
         connected.value = true;
-        addEvent('session_created', 'WS', '连接建立');
+        addLocalNotice('WS', '连接建立');
         // 连接后只查询当前 session 状态，不自动注册工具
         loadSessions();
         loadSessionHistory();
@@ -714,11 +720,11 @@ createApp({
       ws.onclose = () => {
         connected.value = false;
         connectionId.value = '';
-        addEvent('session_closed', 'WS', '连接断开');
+        addLocalNotice('WS', '连接断开');
         if (autoReconnect.value) scheduleReconnect();
       };
       ws.onerror = (e) => {
-        addEvent('error', 'WS', '连接错误');
+        addLocalNotice('WS', '连接错误');
       };
       ws.onmessage = (evt) => {
         const raw = evt.data;
@@ -738,8 +744,7 @@ createApp({
           const e = msg;
           const type = e.event_type || 'unknown';
           const payload = e.payload || {};
-          const summary = summarizeEvent(type, payload);
-          addEvent(type, e.session_id, summary, e.run_id);
+          addEvent(type, e.session_id, payload, e.run_id, e);
           handleEvent(type, payload);
           return;
         }
@@ -749,11 +754,9 @@ createApp({
           // 先刷入正在流式显示的文本（防止 model.completed 还没到时 response 先到导致丢失）
           flushStreaming();
 
-          const label = msg.success ? 'response' : 'error';
-          const summary = msg.success
-            ? JSON.stringify(msg.payload).slice(0, 200)
-            : (msg.payload?.error || '未知错误');
-          addEvent(label, '', `[${msg.request_id}] ${summary}`);
+          if (!msg.success) {
+            addLocalNotice('命令失败', `[${msg.request_id}] ${msg.payload?.error || '未知错误'}`);
+          }
 
           // session.send 的响应不再 push 到聊天（assistant 消息已通过 model.completed 显示）
           // 其他 command 的响应照常显示为 system 消息
@@ -829,15 +832,15 @@ createApp({
                 meta: m.created_at ? new Date(m.created_at).toLocaleTimeString('zh-CN', {hour12:false}) : '',
               })).filter(m => m.text);
               scrollToChat();
-              addEvent('session_created', '', `已加载 ${chatMessages.value.length} 条历史消息`);
+              addLocalNotice('会话', `已加载 ${chatMessages.value.length} 条历史消息`);
             }
           }
           return;
         }
 
-        // Stream
+        // Stream 是 Core 主动推送的运行时流，也归入事件流；命令响应不进入事件流
         if (msg.type === 'stream') {
-          addEvent('stream', msg.session_id, JSON.stringify(msg.data).slice(0, 120));
+          addEvent('stream', msg.session_id, msg.data || {}, msg.run_id, msg);
           return;
         }
       };
@@ -854,7 +857,7 @@ createApp({
       reconnectTimer.value = setTimeout(() => {
         reconnectTimer.value = null;
         if (!connected.value && autoReconnect.value) {
-          addEvent('session_created', 'WS', '自动重连...');
+          addLocalNotice('WS', '自动重连...');
           connect();
         }
       }, 3000);
@@ -902,7 +905,7 @@ createApp({
       loadProvider();
       loadSystemPrompt();
       loadTools();
-      addEvent('session_created', id, '已切换并加载 session');
+      addLocalNotice('会话', `已切换并加载 session: ${id}`);
     }
 
     function loadTools() {
@@ -972,7 +975,7 @@ createApp({
       if (!ws || !rawInput.value.trim()) return;
       const text = rawInput.value.trim();
       let parsed;
-      try { parsed = JSON.parse(text); } catch(e) { addEvent('error', '', 'JSON 解析失败: ' + e.message); return; }
+      try { parsed = JSON.parse(text); } catch(e) { addLocalNotice('原始命令', 'JSON 解析失败: ' + e.message); return; }
       if (!parsed.request_id) parsed.request_id = nextReqId();
       const out = JSON.stringify(parsed);
       ws.send(out);
@@ -1100,40 +1103,56 @@ createApp({
         'context.compaction.applied': '上下文压缩',
         'prompt.attached': 'Prompt 附加',
         'error': '错误',
-        'response': '命令响应',
         'stream': '流数据',
       };
       return map[type] || type;
     }
 
     function summarizeEvent(type, p) {
-      const t = (v) => v;
+      p = p || {};
+      const text = (v, n = 60) => String(v ?? '').slice(0, n);
+      const tag = (v, cls) => `<span class="raw-tag${cls ? ' '+cls : ''}">${String(v ?? '')}</span>`;
       switch(type) {
-        case 'model.delta': return `增量: "${(p.delta||'').slice(0,40)}"`;
-        case 'model.completed': return `内容: "${(p.content||'').slice(0,60)}"`;
-        case 'tool.call.request': return `请求执行业务端工具 ${p.tool_name}，输入: ${JSON.stringify(p.input||{}).slice(0,50)}`;
-        case 'tool.call.result': return `Core 已接收 ${p.tool_name} 结果: ${(p.result||'').slice(0,40)} ${p.is_error?'失败':'成功'}`;
-        case 'tool.call.error': return `${p.tool_name} 错误: ${(p.error||'').slice(0,40)}`;
-        case 'tool.registered': return `工具 ${p.tool_name} 客户端 ${p.client_id}`;
-        case 'session.created': return `标题: ${p.title||p.auto_created?'自动创建':'—'}`;
-        case 'session.closed': return p.reason ? `原因: ${p.reason}` : '';
-        case 'run.started': return `供应商: ${p.provider} 模型: ${p.model}`;
-        case 'run.completed': return `Token: ${p.total_tokens||'—'}`;
-        case 'error': return JSON.stringify(p).slice(0, 80);
-        case 'context.threshold.reached': return `使用率: ${p.usage_percent}% Token: ${p.estimated_tokens}`;
-        case 'context.compaction.applied': return '上下文已压缩';
-        case 'prompt.attached': return p.prompt_name || p.name || '';
-        case 'response': return `${p.success?'成功':'失败'} ${JSON.stringify(p).slice(0,60)}`;
-        case 'stream': return JSON.stringify(p).slice(0, 60);
-        default: return JSON.stringify(p).slice(0, 80);
+        case 'model.delta': return `增量 ${tag(JSON.stringify(p.delta || '').slice(0, 48))}`;
+        case 'model.completed': return `内容 ${tag(text(p.content, 80))}`;
+        case 'tool.call.request': return `${tag(p.tool_name)} 输入 ${tag(JSON.stringify(p.input || {}).slice(0, 64))}`;
+        case 'tool.call.result': return `${tag(p.tool_name)} ${p.is_error ? tag('失败','err') : tag('成功')} 结果 ${text(p.result, 56)}`;
+        case 'tool.call.error': return `${tag(p.tool_name)} ${tag(text(p.error, 64), 'err')}`;
+        case 'tool.registered': return `${tag(p.tool_name)} 客户端 ${tag(p.client_id || '—')}`;
+        case 'session.created': return `标题 ${tag(p.title || (p.auto_created ? '自动创建' : '—'))}`;
+        case 'session.closed': return p.reason ? `原因 ${tag(p.reason)}` : '会话关闭';
+        case 'run.started': return `供应商 ${tag(p.provider || '—')} 模型 ${tag(p.model || '—')}`;
+        case 'run.completed': return `Token ${tag(p.total_tokens || '—')} 耗时 ${tag(p.duration_ms ? p.duration_ms + 'ms' : '—')}`;
+        case 'error': return tag(JSON.stringify(p).slice(0, 90), 'err');
+        case 'context.threshold.reached': return `使用率 ${tag((p.usage_percent ?? '—') + '%')} Token ${tag(p.estimated_tokens || '—')}`;
+        case 'context.compaction.applied': return '上下文压缩已应用';
+        case 'prompt.attached': return `Prompt ${tag(p.prompt_name || p.name || '—')}`;
+        case 'stream': return `流数据 ${tag(JSON.stringify(p).slice(0, 80))}`;
+        default: return JSON.stringify(p).slice(0, 100);
       }
     }
 
-    function addEvent(type, session, summary, runId) {
-      events.value.push({ type, session, summary, runId, time: now(), label: eventLabel(type), _new: true });
+    function addEvent(type, session, payload, runId, rawEnvelope) {
+      const data = JSON.stringify(rawEnvelope || { type: 'event', event_type: type, session_id: session, run_id: runId, payload }, null, 2);
+      events.value.push({
+        type,
+        session,
+        brief: summarizeEvent(type, payload),
+        runId,
+        data,
+        time: now(),
+        label: eventLabel(type),
+        _new: true,
+        _expanded: false,
+      });
       if (events.value.length > 500) events.value.splice(0, events.value.length - 500);
       nextTick(() => { if (streamBody.value) streamBody.value.scrollTop = streamBody.value.scrollHeight; });
       setTimeout(() => { const e = events.value[events.value.length-1]; if(e) e._new = false; }, 800);
+    }
+
+    function addLocalNotice(title, message) {
+      chatMessages.value.push({ role: 'system', text: `${title}: ${message || ''}`, meta: now() });
+      scrollToChat();
     }
 
     // ─── 原始消息中文解析 ──────────────────────────────
@@ -1174,8 +1193,6 @@ createApp({
             'system.stats': '系统统计响应',
             'context.preview': '上下文预览响应',
             'context.compaction.apply': '压缩执行响应',
-            'events.pull': '事件拉取响应',
-            'events.subscribe': '事件订阅响应',
             'run.cancel': '取消推理响应',
           };
           const respLabel = cmdLabels[cmd] || '命令响应';
@@ -1249,8 +1266,6 @@ createApp({
         'context.preview':      () => ({ label: '上下文预览', brief: sid }),
         'context.compaction.apply': () => ({ label: '执行压缩', brief: sid }),
         'run.cancel':           () => ({ label: '取消推理', brief: sid }),
-        'events.pull':          () => ({ label: '拉取事件', brief: `${sid} since ${tag(p.since_seq||0)}` }),
-        'events.subscribe':     () => ({ label: '订阅事件', brief: `${sid} since ${tag(p.since_seq||0)}` }),
       };
       const factory = cmdMap[cmd];
       if (factory) return factory();
