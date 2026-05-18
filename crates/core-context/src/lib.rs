@@ -155,10 +155,93 @@ impl ContextManager {
         }
     }
 
+    /// 获取当前 ContextState
+    pub fn get_context(&self, session_id: &str) -> Option<ContextState> {
+        self.contexts.read().unwrap().get(session_id).cloned()
+    }
+
+    /// 生成默认 ContextState（full mode）
+    pub fn default_context_state(&self, session_id: &str) -> ContextState {
+        ContextState {
+            context_id: format!("ctx_{}", uuid::Uuid::new_v4()),
+            session_id: session_id.to_string(),
+            mode: ContextMode::Full,
+            rules: ContextRules::default(),
+            created_at: chrono::Utc::now(),
+        }
+    }
+
     /// 设置 ContextState
     pub fn set_context(&self, session_id: &str, ctx: ContextState) {
         let mut contexts = self.contexts.write().unwrap();
         contexts.insert(session_id.to_string(), ctx);
+    }
+
+    /// 重置 ContextState 为 full mode
+    pub fn reset_context(&self, session_id: &str) -> ContextState {
+        let ctx = self.default_context_state(session_id);
+        self.set_context(session_id, ctx.clone());
+        ctx
+    }
+
+    /// 排除一段消息范围
+    pub fn exclude_range(&self, session_id: &str, start_message_id: &str, end_message_id: &str) -> ContextState {
+        let mut ctx = self.get_context(session_id)
+            .unwrap_or_else(|| self.default_context_state(session_id));
+        ctx.mode = ContextMode::Sliding;
+        ctx.rules.exclude_ranges.push((start_message_id.to_string(), end_message_id.to_string()));
+        ctx.created_at = chrono::Utc::now();
+        self.set_context(session_id, ctx.clone());
+        ctx
+    }
+
+    /// 只保留某条消息之后的上下文
+    pub fn include_after(&self, session_id: &str, message_id: &str) -> ContextState {
+        let mut ctx = self.get_context(session_id)
+            .unwrap_or_else(|| self.default_context_state(session_id));
+        ctx.mode = ContextMode::Sliding;
+        ctx.rules.include_after_message_id = Some(message_id.to_string());
+        ctx.created_at = chrono::Utc::now();
+        self.set_context(session_id, ctx.clone());
+        ctx
+    }
+
+    /// 设置最近消息窗口
+    pub fn set_keep_recent(&self, session_id: &str, keep: Option<u64>) -> ContextState {
+        let mut ctx = self.get_context(session_id)
+            .unwrap_or_else(|| self.default_context_state(session_id));
+        ctx.mode = if keep.is_some() { ContextMode::Sliding } else { ContextMode::Full };
+        ctx.rules.keep_recent_messages = keep;
+        ctx.created_at = chrono::Utc::now();
+        self.set_context(session_id, ctx.clone());
+        ctx
+    }
+
+    /// 应用压缩摘要：写入 summary seed，并切换到 compacted context
+    pub fn apply_compaction(&self, session_id: &str, summary: String, include_after_message_id: Option<String>) -> (ContextState, ContextSeed) {
+        let seed = ContextSeed {
+            seed_id: format!("seed_{}", uuid::Uuid::new_v4()),
+            session_id: session_id.to_string(),
+            kind: SeedKind::CompactionSummary,
+            content: summary,
+            enabled: true,
+            priority: 100,
+        };
+        self.add_seed(session_id, seed.clone());
+        let ctx = ContextState {
+            context_id: format!("ctx_{}", uuid::Uuid::new_v4()),
+            session_id: session_id.to_string(),
+            mode: ContextMode::Compacted,
+            rules: ContextRules {
+                include_after_message_id,
+                exclude_ranges: Vec::new(),
+                keep_recent_messages: None,
+                base_seed_ids: vec![seed.seed_id.clone()],
+            },
+            created_at: chrono::Utc::now(),
+        };
+        self.set_context(session_id, ctx.clone());
+        (ctx, seed)
     }
 
     /// 添加 Context Seed

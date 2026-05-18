@@ -307,11 +307,30 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
                 handle_system_stats(&scaffold, &tx_clone, &request_id).await;
             }
             commands::CONTEXT_PREVIEW => {
+                if !session_id.is_empty() {
+                    if let Err(e) = scaffold.load_session_state(&session_id).await {
+                        warn!(session_id = %session_id, error = %e, "load session state failed");
+                    }
+                }
                 handle_context_preview(&scaffold, &tx_clone, &session_id, &request_id).await;
             }
+            commands::CONTEXT_RESET => {
+                handle_context_reset(&scaffold, &tx_clone, &session_id, &request_id).await;
+            }
+            commands::CONTEXT_EXCLUDE => {
+                handle_context_exclude(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
+            }
+            commands::CONTEXT_INCLUDE_AFTER => {
+                handle_context_include_after(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
+            }
+            commands::CONTEXT_KEEP_RECENT => {
+                handle_context_keep_recent(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
+            }
+            commands::CONTEXT_SEED_ADD => {
+                handle_context_seed_add(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
+            }
             commands::COMPACTION_APPLY => {
-                info!(session_id = %session_id, "compaction.apply received (TODO)");
-                send_ok(&tx_clone, &request_id, json!({"status": "acknowledged"})).await;
+                handle_compaction_apply(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
             }
             commands::EVENTS_PULL => {
                 handle_events_pull(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
@@ -889,13 +908,211 @@ async fn handle_context_preview(
         send_err(tx, request_id, "session_id is required").await;
         return;
     }
-    let messages = scaffold.context_mgr.get_all_messages(session_id);
+    let all_messages = scaffold.context_mgr.get_all_messages(session_id);
+    let active_messages = scaffold.context_mgr.build_context_view(session_id);
+    let model_input = scaffold.context_mgr.build_model_input(session_id);
     let seeds = scaffold.context_mgr.get_seeds(session_id);
-    let preview = core_export::context_preview(&messages, &seeds);
+    let stats = scaffold.context_mgr.stats(session_id);
+    let active_context = scaffold.context_mgr.get_context(session_id)
+        .unwrap_or_else(|| scaffold.context_mgr.default_context_state(session_id));
+    let preview = core_export::context_preview(&active_messages, &seeds);
     send_ok(tx, request_id, json!({
         "session_id": session_id,
+        "active_context": active_context,
+        "stats": {
+            "message_count": stats.message_count,
+            "estimated_tokens": stats.estimated_tokens,
+            "window_tokens": stats.window_tokens,
+            "usage_percent": stats.usage_percent,
+        },
+        "counts": {
+            "all_messages": all_messages.len(),
+            "active_messages": active_messages.len(),
+            "model_input_messages": model_input.len(),
+            "seeds": seeds.len(),
+        },
+        "messages": active_messages,
+        "seeds": seeds,
         "preview": preview,
     })).await;
+}
+
+async fn persist_context_state(scaffold: &AgentKernel, ctx: &ContextState) -> Result<(), String> {
+    scaffold.storage.save_context_state(ctx).await
+}
+
+async fn emit_context_event(scaffold: &AgentKernel, session_id: &str, event_type: &str, payload: serde_json::Value) {
+    scaffold.event_bus.emit(EventEnvelope::new(event_type, session_id).with_payload(payload));
+}
+
+async fn handle_context_reset(
+    scaffold: &AgentKernel,
+    tx: &mpsc::Sender<WsMessage>,
+    session_id: &str,
+    request_id: &str,
+) {
+    if session_id.is_empty() {
+        send_err(tx, request_id, "session_id is required").await;
+        return;
+    }
+    scaffold.session_mgr.get_or_create(session_id).await.ok();
+    let ctx = scaffold.context_mgr.reset_context(session_id);
+    if let Err(e) = persist_context_state(scaffold, &ctx).await {
+        send_err(tx, request_id, &e).await;
+        return;
+    }
+    emit_context_event(scaffold, session_id, "context.reset", json!({"context": ctx.clone()})).await;
+    send_ok(tx, request_id, json!({"session_id": session_id, "active_context": ctx})).await;
+}
+
+async fn handle_context_exclude(
+    scaffold: &AgentKernel,
+    tx: &mpsc::Sender<WsMessage>,
+    session_id: &str,
+    request_id: &str,
+    payload: &serde_json::Value,
+) {
+    if session_id.is_empty() {
+        send_err(tx, request_id, "session_id is required").await;
+        return;
+    }
+    let start = payload["start_message_id"].as_str().unwrap_or("");
+    let end = payload["end_message_id"].as_str().unwrap_or(start);
+    if start.is_empty() {
+        send_err(tx, request_id, "start_message_id is required").await;
+        return;
+    }
+    scaffold.session_mgr.get_or_create(session_id).await.ok();
+    let ctx = scaffold.context_mgr.exclude_range(session_id, start, end);
+    if let Err(e) = persist_context_state(scaffold, &ctx).await {
+        send_err(tx, request_id, &e).await;
+        return;
+    }
+    emit_context_event(scaffold, session_id, "context.updated", json!({"action": "exclude", "context": ctx.clone()})).await;
+    send_ok(tx, request_id, json!({"session_id": session_id, "active_context": ctx})).await;
+}
+
+async fn handle_context_include_after(
+    scaffold: &AgentKernel,
+    tx: &mpsc::Sender<WsMessage>,
+    session_id: &str,
+    request_id: &str,
+    payload: &serde_json::Value,
+) {
+    if session_id.is_empty() {
+        send_err(tx, request_id, "session_id is required").await;
+        return;
+    }
+    let message_id = payload["message_id"].as_str().unwrap_or("");
+    if message_id.is_empty() {
+        send_err(tx, request_id, "message_id is required").await;
+        return;
+    }
+    scaffold.session_mgr.get_or_create(session_id).await.ok();
+    let ctx = scaffold.context_mgr.include_after(session_id, message_id);
+    if let Err(e) = persist_context_state(scaffold, &ctx).await {
+        send_err(tx, request_id, &e).await;
+        return;
+    }
+    emit_context_event(scaffold, session_id, "context.updated", json!({"action": "include_after", "context": ctx.clone()})).await;
+    send_ok(tx, request_id, json!({"session_id": session_id, "active_context": ctx})).await;
+}
+
+async fn handle_context_keep_recent(
+    scaffold: &AgentKernel,
+    tx: &mpsc::Sender<WsMessage>,
+    session_id: &str,
+    request_id: &str,
+    payload: &serde_json::Value,
+) {
+    if session_id.is_empty() {
+        send_err(tx, request_id, "session_id is required").await;
+        return;
+    }
+    let keep = if payload["keep"].is_null() { None } else { payload["keep"].as_u64() };
+    scaffold.session_mgr.get_or_create(session_id).await.ok();
+    let ctx = scaffold.context_mgr.set_keep_recent(session_id, keep);
+    if let Err(e) = persist_context_state(scaffold, &ctx).await {
+        send_err(tx, request_id, &e).await;
+        return;
+    }
+    emit_context_event(scaffold, session_id, "context.updated", json!({"action": "keep_recent", "context": ctx.clone()})).await;
+    send_ok(tx, request_id, json!({"session_id": session_id, "active_context": ctx})).await;
+}
+
+async fn handle_context_seed_add(
+    scaffold: &AgentKernel,
+    tx: &mpsc::Sender<WsMessage>,
+    session_id: &str,
+    request_id: &str,
+    payload: &serde_json::Value,
+) {
+    if session_id.is_empty() {
+        send_err(tx, request_id, "session_id is required").await;
+        return;
+    }
+    let content = payload["content"].as_str().unwrap_or("").to_string();
+    if content.trim().is_empty() {
+        send_err(tx, request_id, "content is required").await;
+        return;
+    }
+    let kind = match payload["kind"].as_str().unwrap_or("system_memory") {
+        "compaction_summary" => SeedKind::CompactionSummary,
+        "user_preference" => SeedKind::UserPreference,
+        "world_state" => SeedKind::WorldState,
+        "agent_state" => SeedKind::AgentState,
+        _ => SeedKind::SystemMemory,
+    };
+    let seed = ContextSeed {
+        seed_id: format!("seed_{}", uuid::Uuid::new_v4()),
+        session_id: session_id.to_string(),
+        kind,
+        content,
+        enabled: payload["enabled"].as_bool().unwrap_or(true),
+        priority: payload["priority"].as_i64().unwrap_or(0) as i32,
+    };
+    scaffold.session_mgr.get_or_create(session_id).await.ok();
+    scaffold.context_mgr.add_seed(session_id, seed.clone());
+    if let Err(e) = scaffold.storage.save_seed(&seed).await {
+        send_err(tx, request_id, &e).await;
+        return;
+    }
+    emit_context_event(scaffold, session_id, "context.seed.added", json!({"seed": seed.clone()})).await;
+    send_ok(tx, request_id, json!({"session_id": session_id, "seed": seed})).await;
+}
+
+async fn handle_compaction_apply(
+    scaffold: &AgentKernel,
+    tx: &mpsc::Sender<WsMessage>,
+    session_id: &str,
+    request_id: &str,
+    payload: &serde_json::Value,
+) {
+    if session_id.is_empty() {
+        send_err(tx, request_id, "session_id is required").await;
+        return;
+    }
+    let summary = payload["summary"].as_str().unwrap_or("").to_string();
+    if summary.trim().is_empty() {
+        send_err(tx, request_id, "summary is required").await;
+        return;
+    }
+    let include_after = payload["include_after_message_id"].as_str().map(String::from);
+    scaffold.session_mgr.get_or_create(session_id).await.ok();
+    let (ctx, seed) = scaffold.context_mgr.apply_compaction(session_id, summary, include_after);
+    if let Err(e) = scaffold.storage.save_seed(&seed).await {
+        send_err(tx, request_id, &e).await;
+        return;
+    }
+    if let Err(e) = persist_context_state(scaffold, &ctx).await {
+        send_err(tx, request_id, &e).await;
+        return;
+    }
+    emit_context_event(scaffold, session_id, CONTEXT_COMPACTION_APPLIED, json!({
+        "context": ctx.clone(),
+        "seed": seed.clone(),
+    })).await;
+    send_ok(tx, request_id, json!({"session_id": session_id, "active_context": ctx, "seed": seed})).await;
 }
 
 async fn handle_update_provider(

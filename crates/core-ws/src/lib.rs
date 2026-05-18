@@ -65,6 +65,11 @@ pub mod commands {
 
     // ─── Context ───────────────────────────
     pub const CONTEXT_PREVIEW: &str = "context.preview";
+    pub const CONTEXT_RESET: &str = "context.reset";
+    pub const CONTEXT_EXCLUDE: &str = "context.exclude";
+    pub const CONTEXT_INCLUDE_AFTER: &str = "context.include_after";
+    pub const CONTEXT_KEEP_RECENT: &str = "context.keep_recent";
+    pub const CONTEXT_SEED_ADD: &str = "context.seed.add";
     pub const COMPACTION_APPLY: &str = "context.compaction.apply";
 
     // ─── Events（断线补拉 + 订阅）──────────

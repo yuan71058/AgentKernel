@@ -3,8 +3,6 @@
 > 一个轻量、可嵌入、WebSocket 驱动的 AI Runtime Kernel。  
 > 让你的网页、脚本、服务端项目不再反复从 0 写 Agent Runtime。
 
-![AgentKernel Runtime Console](assets/1.png)
-
 ## 为什么做 AgentKernel？
 
 我一直想做一个类似 Claude Code 的“基座”。Claude Code 的工程能力很强，但它本身很重，也内置了大量偏工程化的工具能力。很多场景里，我们只是想把 AI Runtime 嵌入自己的产品、网页、脚本或自动化系统，并不一定需要完整的 CLI 工程代理。
@@ -61,8 +59,6 @@ Agent Runtime Kernel / AI Runtime Core
 **Kernel 只管运行时，业务端只管编排。**
 
 ## 架构理念
-
-![Session 管理](assets/2.png)
 
 AgentKernel 采用 WebSocket 作为核心通信协议。
 
@@ -156,8 +152,6 @@ Kernel 只负责检测阈值并发事件，不硬编码你的压缩策略。
 
 ### 3. 工具能力动态热插拔
 
-![工具注册与调用](assets/3.png)
-
 工具不是写死在 Kernel 里，而是由业务端动态注册。
 
 这让 AgentKernel 可以很轻：
@@ -177,8 +171,6 @@ Kernel 不关心工具怎么执行，只负责：
 6. 把 tool_result 回填给模型继续推理
 
 ### 4. 事件流是运行时的一等公民
-
-![事件流](assets/4.png)
 
 AgentKernel 会在运行过程中主动推送事件，例如：
 
@@ -381,29 +373,18 @@ ws://localhost:9991/ws
 
 ## 调试控制台截图
 
-### Runtime Console
-
-![Runtime Console](assets/1.png)
-
-### Session 管理
-
-![Session Management](assets/2.png)
-
-### 工具注册与执行
-
-![Tool Runtime](assets/3.png)
-
-### 事件流
-
-![Event Stream](assets/4.png)
-
-### 原始消息可视化
-
-![Raw Messages](assets/5.png)
-
-### 配置与提示词
-
-![Config and Prompt](assets/6.png)
+<table>
+  <tr>
+    <td align="center"><img src="assets/1.png" alt="Runtime Console" width="280"><br>Runtime Console</td>
+    <td align="center"><img src="assets/2.png" alt="Session Management" width="280"><br>Session Management</td>
+    <td align="center"><img src="assets/3.png" alt="Tool Runtime" width="280"><br>Tool Runtime</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="assets/4.png" alt="Event Stream" width="280"><br>Event Stream</td>
+    <td align="center"><img src="assets/5.png" alt="Raw Messages" width="280"><br>Raw Messages</td>
+    <td align="center"><img src="assets/6.png" alt="Config and Prompt" width="280"><br>Config and Prompt</td>
+  </tr>
+</table>
 
 ## 适合什么场景？
 
@@ -461,3 +442,11 @@ AgentKernel 的价值在于：
 ## License
 
 MIT
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=cih1996/AgentKernel&type=Date)](https://www.star-history.com/#cih1996/AgentKernel&Date)
+
+## 社区交流
+
+QQ群：`250892941`

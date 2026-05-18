@@ -239,6 +239,9 @@ select.config-input option { background: var(--bg); color: var(--text); }
           <div class="tab" :class="{active: rightTab==='raw'}" @click="rightTab='raw'">
             原始消息 <span class="tab-badge" v-if="rawMessages.length">{{ rawMessages.length }}</span>
           </div>
+          <div class="tab" :class="{active: rightTab==='context'}" @click="rightTab='context'">
+            上下文 <span class="tab-badge" v-if="contextPreview.counts">{{ contextPreview.counts.active_messages || 0 }}</span>
+          </div>
           <div class="tab" :class="{active: rightTab==='stats'}" @click="rightTab='stats'">统计</div>
           <div class="tab" :class="{active: rightTab==='prompt'}" @click="rightTab='prompt'">提示词</div>
           <div class="tab" :class="{active: rightTab==='config'}" @click="rightTab='config'">配置</div>
@@ -385,6 +388,84 @@ select.config-input option { background: var(--bg); color: var(--text); }
           </div>
         </template>
 
+        <!-- 上下文 tab -->
+        <template v-if="rightTab==='context'">
+          <div class="config-body">
+            <div class="config-section">
+              <div class="config-title">当前激活上下文 <span style="font-size:10px;color:var(--text3);font-weight:400">模型本轮实际可见的消息范围，不等于全量历史</span></div>
+              <div class="config-actions">
+                <button class="btn btn-connect" @click="loadContextPreview" :disabled="!connected">刷新上下文预览</button>
+                <button class="btn" @click="resetContext" :disabled="!connected">重置为全量上下文</button>
+                <button class="btn" @click="keepRecentContext" :disabled="!connected">只保留最近 N 条</button>
+              </div>
+              <div class="config-row-group" style="margin-top:8px">
+                <div class="config-row" style="flex:1">
+                  <label>最近保留消息数</label>
+                  <input class="config-input" v-model.number="contextKeepRecent" type="number" placeholder="20">
+                </div>
+                <div class="config-row" style="flex:1">
+                  <label>从某条消息之后开始</label>
+                  <input class="config-input" v-model="contextIncludeAfter" placeholder="msg_xxx">
+                </div>
+              </div>
+              <div class="config-actions">
+                <button class="btn" @click="includeAfterContext" :disabled="!connected || !contextIncludeAfter.trim()">应用“从此之后”</button>
+              </div>
+              <div class="stats-panel" style="margin-top:10px" v-if="contextPreview.active_context">
+                <div class="stat-row"><span class="stat-label">上下文 ID</span><span class="stat-value">{{ contextPreview.active_context.context_id }}</span></div>
+                <div class="stat-row"><span class="stat-label">上下文模式</span><span class="stat-value">{{ contextModeLabel(contextPreview.active_context.mode) }}</span></div>
+                <div class="stat-row"><span class="stat-label">全部消息</span><span class="stat-value">{{ contextPreview.counts?.all_messages || 0 }}</span></div>
+                <div class="stat-row"><span class="stat-label">当前可见消息</span><span class="stat-value">{{ contextPreview.counts?.active_messages || 0 }}</span></div>
+                <div class="stat-row"><span class="stat-label">模型输入消息</span><span class="stat-value">{{ contextPreview.counts?.model_input_messages || 0 }}</span></div>
+                <div class="stat-row"><span class="stat-label">注入块数量</span><span class="stat-value">{{ contextPreview.counts?.seeds || 0 }}</span></div>
+              </div>
+              <div class="config-hint" v-if="contextStatus">{{ contextStatus }}</div>
+            </div>
+
+            <div class="config-section">
+              <div class="config-title">手动注入 Seed</div>
+              <div class="config-row">
+                <label>类型</label>
+                <select v-model="contextSeedKind" class="config-input">
+                  <option value="system_memory">System Memory</option>
+                  <option value="compaction_summary">Compaction Summary</option>
+                  <option value="user_preference">User Preference</option>
+                  <option value="world_state">World State</option>
+                  <option value="agent_state">Agent State</option>
+                </select>
+              </div>
+              <textarea class="config-input" v-model="contextSeedContent" style="min-height:90px;resize:vertical" placeholder="这段内容会作为 Context Seed 注入模型输入..."></textarea>
+              <div class="config-actions">
+                <button class="btn btn-connect" @click="addContextSeed" :disabled="!connected || !contextSeedContent.trim()">注入 Seed</button>
+              </div>
+            </div>
+
+            <div class="config-section">
+              <div class="config-title">Compact Apply</div>
+              <textarea class="config-input" v-model="contextSummary" style="min-height:110px;resize:vertical" placeholder="压缩摘要 summary..."></textarea>
+              <div class="config-actions">
+                <button class="btn btn-connect" @click="applyCompaction" :disabled="!connected || !contextSummary.trim()">应用压缩摘要</button>
+              </div>
+            </div>
+
+            <div class="config-section">
+              <div class="config-title">Active Messages</div>
+              <template v-if="!contextPreview.messages || contextPreview.messages.length===0">
+                <div style="color:var(--text3);font-size:11px;padding:8px 0">暂无 active context 预览</div>
+              </template>
+              <template v-for="m in contextPreview.messages || []" :key="m.message_id">
+                <div class="raw-card" style="cursor:default">
+                  <div class="raw-card-header">
+                    <span class="raw-label">{{ m.role }}</span>
+                    <span class="raw-brief"><span class="raw-tag">{{ m.message_id }}</span> {{ contextMessageText(m).slice(0,90) }}</span>
+                    <button class="btn" @click.stop="excludeSingleMessage(m.message_id)" :disabled="!connected" style="padding:2px 8px;font-size:10px">排除</button>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+
         <!-- Stats tab -->
         <template v-if="rightTab==='stats'">
           <div class="stats-panel">
@@ -525,6 +606,13 @@ createApp({
     const providerStatus = ref('');
     const systemPrompt = ref('');
     const systemPromptStatus = ref('');
+    const contextPreview = ref({});
+    const contextStatus = ref('');
+    const contextKeepRecent = ref(20);
+    const contextIncludeAfter = ref('');
+    const contextSeedKind = ref('system_memory');
+    const contextSeedContent = ref('');
+    const contextSummary = ref('');
 
     // 流式文本累积
     const streamingText = ref('');
@@ -716,6 +804,7 @@ createApp({
         loadProvider();
         loadSystemPrompt();
         loadTools();
+        loadContextPreview();
       };
       ws.onclose = () => {
         connected.value = false;
@@ -788,6 +877,21 @@ createApp({
             setTimeout(() => systemPromptStatus.value = '', 4000);
           }
 
+          const respCmd = pendingCommands.get(msg.request_id) || '';
+          if (msg.success && msg.payload?.active_context) {
+            contextPreview.value = msg.payload;
+            contextStatus.value = `Context 已更新: ${msg.payload.active_context.mode}`;
+            setTimeout(() => contextStatus.value = '', 4000);
+          }
+          if (msg.success && msg.payload?.seed && respCmd === 'context.seed.add') {
+            contextSeedContent.value = '';
+            loadContextPreview();
+          }
+          if (msg.success && (respCmd === 'context.compaction.apply')) {
+            contextSummary.value = '';
+            loadContextPreview();
+          }
+
           // tool.list 响应 → 回填工具列表
           if (msg.success && Array.isArray(msg.payload?.tools)) {
             tools.value = msg.payload.tools.map(t => ({
@@ -801,7 +905,6 @@ createApp({
           }
 
           // tool.register / unregister 响应后刷新 session 工具配置
-          const respCmd = pendingCommands.get(msg.request_id) || '';
           if (msg.success && (respCmd === 'tool.register' || respCmd === 'tool.unregister')) {
             loadTools();
           }
@@ -905,7 +1008,66 @@ createApp({
       loadProvider();
       loadSystemPrompt();
       loadTools();
+      loadContextPreview();
       addLocalNotice('会话', `已切换并加载 session: ${id}`);
+    }
+
+    function sendCommand(command, payload = {}, sid = sessionId.value) {
+      if (!ws) return '';
+      const rid = nextReqId();
+      const msg = { command, request_id: rid, session_id: sid, payload };
+      const out = JSON.stringify(msg);
+      ws.send(out);
+      addRawMessage('out', out);
+      return rid;
+    }
+
+    function loadContextPreview() {
+      sendCommand('context.preview');
+    }
+
+    function resetContext() {
+      sendCommand('context.reset');
+    }
+
+    function keepRecentContext() {
+      const keep = Number(contextKeepRecent.value || 0);
+      sendCommand('context.keep_recent', { keep: keep > 0 ? keep : null });
+    }
+
+    function includeAfterContext() {
+      const message_id = contextIncludeAfter.value.trim();
+      if (!message_id) return;
+      sendCommand('context.include_after', { message_id });
+    }
+
+    function excludeSingleMessage(messageId) {
+      sendCommand('context.exclude', { start_message_id: messageId, end_message_id: messageId });
+    }
+
+    function addContextSeed() {
+      sendCommand('context.seed.add', {
+        kind: contextSeedKind.value,
+        content: contextSeedContent.value,
+        enabled: true,
+        priority: 0,
+      });
+    }
+
+    function applyCompaction() {
+      sendCommand('context.compaction.apply', {
+        summary: contextSummary.value,
+        include_after_message_id: contextIncludeAfter.value.trim() || null,
+      });
+    }
+
+    function contextMessageText(m) {
+      return (m.content || []).map(c => {
+        if (c.type === 'text') return c.text || '';
+        if (c.type === 'tool_use') return `[tool_use:${c.name}] ${JSON.stringify(c.input || {})}`;
+        if (c.type === 'tool_result') return `[tool_result:${c.tool_use_id}] ${c.content || ''}`;
+        return JSON.stringify(c);
+      }).join('\n');
     }
 
     function loadTools() {
@@ -1100,6 +1262,9 @@ createApp({
         'tool.call.error': '工具调用失败',
         'tool.registered': '工具注册',
         'context.threshold.reached': '上下文阈值',
+        'context.updated': '上下文更新',
+        'context.reset': '上下文重置',
+        'context.seed.added': 'Seed 已注入',
         'context.compaction.applied': '上下文压缩',
         'prompt.attached': 'Prompt 附加',
         'error': '错误',
@@ -1125,7 +1290,10 @@ createApp({
         case 'run.completed': return `Token ${tag(p.total_tokens || '—')} 耗时 ${tag(p.duration_ms ? p.duration_ms + 'ms' : '—')}`;
         case 'error': return tag(JSON.stringify(p).slice(0, 90), 'err');
         case 'context.threshold.reached': return `使用率 ${tag((p.usage_percent ?? '—') + '%')} Token ${tag(p.estimated_tokens || '—')}`;
-        case 'context.compaction.applied': return '上下文压缩已应用';
+        case 'context.updated': return `动作 ${tag(p.action || 'update')} Mode ${tag(p.context?.mode || '—')}`;
+        case 'context.reset': return `Mode ${tag(p.context?.mode || 'full')}`;
+        case 'context.seed.added': return `Seed ${tag(p.seed?.seed_id || '—')} ${tag(p.seed?.kind || '')}`;
+        case 'context.compaction.applied': return `压缩已应用 ${tag(p.context?.context_id || '')}`;
         case 'prompt.attached': return `Prompt ${tag(p.prompt_name || p.name || '—')}`;
         case 'stream': return `流数据 ${tag(JSON.stringify(p).slice(0, 80))}`;
         default: return JSON.stringify(p).slice(0, 100);
@@ -1398,6 +1566,8 @@ createApp({
       chatBody, streamBody, rawBody,
       providerConfig, providerStatus,
       systemPrompt, systemPromptStatus,
+      contextPreview, contextStatus, contextKeepRecent, contextIncludeAfter,
+      contextSeedKind, contextSeedContent, contextSummary,
       streamingText, isStreaming, autoReconnect,
       connect, disconnect, sendChat, sendRaw, sendToolResult,
       defineClientTool, handleToolCallRequest,
@@ -1405,6 +1575,8 @@ createApp({
       registerPresetTool, registerPresetTools,
       saveProvider, loadProvider, applyTemplate,
       saveSystemPrompt, loadSystemPrompt, loadTools,
+      loadContextPreview, resetContext, keepRecentContext, includeAfterContext,
+      excludeSingleMessage, addContextSeed, applyCompaction, contextMessageText,
       filteredEvents, filteredRaw,
     };
   }
