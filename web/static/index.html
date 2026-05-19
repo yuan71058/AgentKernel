@@ -102,6 +102,7 @@
           <div class="filter-bar">
             <span class="filter-chip" :class="{active: eventFilter==='all'}" @click="eventFilter='all'">全部</span>
             <span class="filter-chip" :class="{active: eventFilter==='model'}" @click="eventFilter='model'">模型</span>
+            <span class="filter-chip" :class="{active: eventFilter==='run'}" @click="eventFilter='run'">运行</span>
             <span class="filter-chip" :class="{active: eventFilter==='tool'}" @click="eventFilter='tool'">工具</span>
             <span class="filter-chip" :class="{active: eventFilter==='session'}" @click="eventFilter='session'">会话</span>
             <span class="filter-chip" :class="{active: eventFilter==='context'}" @click="eventFilter='context'">上下文</span>
@@ -120,11 +121,20 @@
                 <div class="raw-card-header">
                   <span class="event-time">{{ e.time }}</span>
                   <span class="event-type" :class="'evt-' + e.type.replace(/\./g, '_')">{{ e.label }}</span>
-                  <span class="raw-brief" v-html="e.brief"></span>
+                  <span v-if="e._merged && e.count > 1" class="raw-merge-badge">× {{ e.count }}</span>
+                  <span class="raw-brief" v-if="!e._merged || e.count === 1" v-html="e.brief"></span>
+                  <span class="raw-brief" v-else>{{ e.brief }}</span>
                   <span class="raw-expand">{{ e._expanded ? '▼' : '▶' }}</span>
                 </div>
-                <div class="raw-detail" v-if="e._expanded">
+                <div class="raw-detail" v-if="e._expanded && !e._merged">
                   <pre>{{ e.data }}</pre>
+                </div>
+                <div class="raw-detail" v-if="e._expanded && e._merged" style="max-height:400px">
+                  <div v-for="(child, ci) in e.children" :key="ci" style="border-bottom:1px dashed var(--border);padding:6px 0;margin-bottom:6px">
+                    <div style="font-size:11px;color:var(--text3);margin-bottom:4px">{{ child.time }} #{{ ci + 1 }}</div>
+                    <div class="raw-brief" style="margin-bottom:6px" v-html="child.brief"></div>
+                    <pre>{{ child.data }}</pre>
+                  </div>
                 </div>
               </div>
             </template>
@@ -510,6 +520,15 @@
                   <div v-else style="white-space:pre-wrap">{{ m.text }}</div>
                 </div>
                 <div class="msg-meta" v-if="m.meta">{{ m.meta }}</div>
+              </div>
+            </template>
+            <template v-if="streamingThinking">
+              <div class="msg-wrapper system">
+                <div class="msg msg-system">
+                  <div style="font-size:12px;color:var(--text3);margin-bottom:6px">思维过程（调试透传）</div>
+                  <div style="white-space:pre-wrap">{{ streamingThinking }}</div>
+                </div>
+                <div class="msg-meta">仅在供应商实际返回 reasoning / thinking 时显示</div>
               </div>
             </template>
             <!-- 流式消息（实时渲染） -->

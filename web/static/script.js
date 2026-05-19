@@ -54,6 +54,7 @@ createApp({
 
     // 流式文本累积
     const streamingText = ref('');
+    const streamingThinking = ref('');
     const isStreaming = ref(false);
     const currentRunId = ref('');
     const currentRunStatus = ref('idle');
@@ -289,6 +290,8 @@ createApp({
         currentRunId.value = '';
         currentRunStatus.value = 'idle';
         streamingText.value = '';
+        streamingThinking.value = '';
+        isStreaming.value = false;
         isStreaming.value = false;
         addLocalNotice('WS', '连接断开');
         if (autoReconnect.value) scheduleReconnect();
@@ -423,6 +426,7 @@ createApp({
               );
             }
             streamingText.value = '';
+            streamingThinking.value = '';
             isStreaming.value = false;
             scrollToChat();
           } else if (msg.success && msg.payload?.content && typeof msg.payload.content === 'string') {
@@ -742,6 +746,7 @@ createApp({
       currentRunId.value = '';
       currentRunStatus.value = 'pending';
       streamingText.value = '';
+      streamingThinking.value = '';
       isStreaming.value = false;
       scrollToChat();
 
@@ -854,13 +859,18 @@ createApp({
       }
       if (type === 'run.started') {
         currentRunStatus.value = 'running';
+        streamingThinking.value = '';
         return;
       }
       // model.delta → 实时累积流式文本
       if (type === 'model.delta' && payload.delta) {
-        currentRunStatus.value = 'streaming';
-        isStreaming.value = true;
-        streamingText.value += payload.delta;
+        if (payload.event_type === 'thinking') {
+          streamingThinking.value += payload.delta;
+        } else {
+          currentRunStatus.value = 'streaming';
+          isStreaming.value = true;
+          streamingText.value += payload.delta;
+        }
         scrollToChat();
       }
       // model.completed → 最终确认（不用 setTimeout，避免与 response 到达产生竞争）
@@ -873,6 +883,7 @@ createApp({
         // 立即转为正式消息
         appendAssistantMessage(streamingText.value || payload.content, now());
         streamingText.value = '';
+        streamingThinking.value = '';
         currentRunStatus.value = 'completed';
         scrollToChat();
         return;
@@ -891,6 +902,7 @@ createApp({
           );
         }
         streamingText.value = '';
+        streamingThinking.value = '';
         isStreaming.value = false;
         currentRunStatus.value = 'cancelled';
         scrollToChat();
@@ -909,7 +921,7 @@ createApp({
     // ─── 事件类型中文标签 ────────────────────────────────
     function eventLabel(type) {
       const map = {
-        'model.delta': '模型输出（流式）',
+        'model.delta': '模型流式增量',
         'model.completed': '模型完成',
         'session.created': '会话创建',
         'session.closed': '会话关闭',
@@ -937,7 +949,7 @@ createApp({
       const text = (v, n = 60) => String(v ?? '').slice(0, n);
       const tag = (v, cls) => `<span class="raw-tag${cls ? ' '+cls : ''}">${String(v ?? '')}</span>`;
       switch(type) {
-        case 'model.delta': return `增量 ${tag(JSON.stringify(p.delta || '').slice(0, 48))}`;
+        case 'model.delta': return `${p.event_type === 'thinking' ? '思维' : '文本'}增量 ${tag(JSON.stringify(p.delta || '').slice(0, 48))}`;
         case 'model.completed': return `内容 ${tag(text(p.content, 80))}`;
         case 'tool.call.request': return `${tag(p.tool_name)} 输入 ${tag(JSON.stringify(p.input || {}).slice(0, 64))}`;
         case 'tool.call.result': return `${tag(p.tool_name)} ${p.is_error ? tag('失败','err') : tag('成功')} 结果 ${text(p.result, 56)}`;
@@ -960,10 +972,47 @@ createApp({
       }
     }
 
+    function eventCategory(type) {
+      if (type === 'error') return 'error';
+      if (type.startsWith('model.')) return 'model';
+      if (type.startsWith('run.')) return 'run';
+      if (type.startsWith('tool.')) return 'tool';
+      if (type.startsWith('session.')) return 'session';
+      if (type.startsWith('context.')) return 'context';
+      return 'other';
+    }
+
     function addEvent(type, session, payload, runId, rawEnvelope) {
       const data = JSON.stringify(rawEnvelope || { type: 'event', event_type: type, session_id: session, run_id: runId, payload }, null, 2);
+      const category = eventCategory(type);
+      const shouldMerge = type === 'model.delta';
+      const last = events.value[events.value.length - 1];
+      if (
+        shouldMerge &&
+        last &&
+        last._merged &&
+        last.type === type &&
+        last.runId === runId &&
+        last.session === session &&
+        last._mergeKey === `${type}:${payload?.event_type || 'text'}`
+      ) {
+        last.count++;
+        last.children.push({
+          time: now(),
+          payload,
+          data,
+          brief: summarizeEvent(type, payload),
+        });
+        last.data = data;
+        last.time = now();
+        last.brief = `${payload?.event_type === 'thinking' ? '思维' : '文本'}增量，已聚合 ${last.count} 条`;
+        nextTick(() => { if (streamBody.value) streamBody.value.scrollTop = streamBody.value.scrollHeight; });
+        return;
+      }
+
       events.value.push({
         type,
+        category,
         session,
         brief: summarizeEvent(type, payload),
         runId,
@@ -972,6 +1021,15 @@ createApp({
         label: eventLabel(type),
         _new: true,
         _expanded: false,
+        _merged: shouldMerge,
+        _mergeKey: `${type}:${payload?.event_type || 'text'}`,
+        count: 1,
+        children: shouldMerge ? [{
+          time: now(),
+          payload,
+          data,
+          brief: summarizeEvent(type, payload),
+        }] : [],
       });
       if (events.value.length > 500) events.value.splice(0, events.value.length - 500);
       nextTick(() => { if (streamBody.value) streamBody.value.scrollTop = streamBody.value.scrollHeight; });
@@ -1056,7 +1114,7 @@ createApp({
           const et = msg.event_type || 'unknown';
           const p = msg.payload || {};
           const map = {
-            'model.delta':              () => ({ label: '模型输出（流式）', brief: `增量 ${tag(JSON.stringify(p.delta||'').slice(0,40))}` }),
+            'model.delta':              () => ({ label: p.event_type === 'thinking' ? '模型思维（流式）' : '模型输出（流式）', brief: `${p.event_type === 'thinking' ? '思维' : '文本'}增量 ${tag(JSON.stringify(p.delta||'').slice(0,40))}` }),
             'model.completed':          () => ({ label: '模型完成', brief: `${tag((p.content||'').slice(0,60))}` }),
             'session.created':          () => ({ label: '会话创建', brief: `标题 ${tag(p.title||'—')}` }),
             'session.closed':           () => ({ label: '会话关闭', brief: p.reason ? `原因 ${tag(p.reason)}` : '' }),
@@ -1181,7 +1239,7 @@ createApp({
 
     const filteredEvents = computed(() => {
       if (eventFilter.value === 'all') return events.value;
-      return events.value.filter(e => e.type.startsWith(eventFilter.value));
+      return events.value.filter(e => e.category === eventFilter.value);
     });
 
     const filteredRaw = computed(() => {
@@ -1253,6 +1311,7 @@ createApp({
       contextPreview, contextStatus, contextKeepRecent, contextIncludeAfter,
       contextSeedKind, contextSeedContent, contextSummary,
       streamingText, isStreaming, currentRunId, currentRunStatus, runStatusLabel, autoReconnect,
+      streamingThinking,
       connect, disconnect, sendChat, cancelCurrentRun, sendRaw, sendToolResult,
       defineClientTool, handleToolCallRequest,
       loadSessions, selectSession, createNewSession,

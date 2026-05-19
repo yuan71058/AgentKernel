@@ -92,7 +92,7 @@ sequenceDiagram
 
 1. **🔌 工具能力动态热插拔**：无需修改 Kernel 源码。业务端通过 WS 动态注册工具定义，接收 `tool.call.request` 后在本地执行并回传结果。
 2. **📚 全量历史与可控视图**：Message Log 永久保留，但提供 Active Context View。Kernel 只暴露阈值事件，不硬编码压缩策略，交由业务端自由裁量。
-3. **⚡ 事件流即一等公民**：运行过程中主动推送 `model.delta`、`tool.call.request` 等状态，彻底告别轮询查询，方便调试与分布式部署。
+3. **⚡ 事件流即一等公民**：运行过程中主动推送 `model.delta`、`tool.call.request` 等状态；如果供应商支持 reasoning / thinking 流式透传，也会通过 `model.delta.payload.event_type = "thinking"` 往外输出，方便调试与分布式部署。
 4. **🪶 保持极致轻量**：不内置重型的记忆系统、规则库或技能市场。坚守边界，只做跨平台复用的 Runtime。
 
 ## ⚖️ 适用场景对比

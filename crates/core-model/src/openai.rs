@@ -138,6 +138,7 @@ impl ProviderAdapter for OpenAIAdapter {
 
         use futures::StreamExt;
         let mut text_parts = Vec::new();
+        let mut thinking_parts = Vec::new();
         let mut tool_calls: std::collections::HashMap<usize, (String, String, String)> = std::collections::HashMap::new();
         let mut stop_reason = String::new();
         let mut buffer = String::new();
@@ -165,6 +166,16 @@ impl ProviderAdapter for OpenAIAdapter {
                             stop_reason = sr.to_string();
                         }
                         if let Some(delta) = choice.get("delta") {
+                            if let Some(reasoning) = delta["reasoning_content"].as_str().or_else(|| delta["reasoning"].as_str()) {
+                                thinking_parts.push(reasoning.to_string());
+                                handler(StreamEvent {
+                                    event: StreamEventType::Thinking,
+                                    delta: reasoning.to_string(),
+                                    full_text: thinking_parts.join(""),
+                                    session_id: String::new(),
+                                    run_id: String::new(),
+                                });
+                            }
                             if let Some(content) = delta["content"].as_str() {
                                 text_parts.push(content.to_string());
                                 handler(StreamEvent {
@@ -196,7 +207,11 @@ impl ProviderAdapter for OpenAIAdapter {
         let mut content = Vec::new();
         let full_text = text_parts.join("");
         if !full_text.is_empty() {
-            content.push(ContentBlock::text(&full_text));
+            let full_reasoning = thinking_parts.join("");
+            content.push(ContentBlock::Text {
+                text: full_text,
+                reasoning_content: if full_reasoning.is_empty() { None } else { Some(full_reasoning) },
+            });
         }
         for (_, (id, name, args)) in &tool_calls {
             let input: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Object(serde_json::Map::new()));

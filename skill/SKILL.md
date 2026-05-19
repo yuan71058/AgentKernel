@@ -104,6 +104,7 @@ cargo run -- --protocol openai --base-url https://api.deepseek.com --model deeps
 5. 收到 `tool.call.request` 时，由业务服务本地执行业务工具，再回传 `tool.execute.result`
 6. 如果用户点击停止生成，由业务服务发送 `run.cancel { run_id }`
 7. 收到 `model.delta` / `model.completed` / `run.cancelled` / `response` 后，再转给用户界面
+8. 如果供应商支持 reasoning / thinking 流式透传，业务端也可以从 `model.delta.payload.event_type = "thinking"` 中拿到思维过程增量
 
 ## 解释 WS 协议时的最小结构
 
@@ -179,6 +180,7 @@ Core 主动推送运行时事件：
 - `Response` 是命令处理结果
 - `Event` 是 Core 主动推送的运行时事件
 - `run.cancel` 的同步响应只表示“开始取消”，真正中断完成以后还会收到 `run.cancelled`
+- 如果供应商支持思维过程流式透传，Core 会继续使用 `event_type = "model.delta"`，并在 `payload.event_type` 里区分 `text` 和 `thinking`
 - 如果用户继续追问所有字段、命令全集、事件全集，再引用详细文档 `skill/通讯数据结构大全.md`
 
 ### 中断当前推理

@@ -136,6 +136,7 @@ impl ProviderAdapter for ClaudeAdapter {
         // SSE 流式解析
         use futures::StreamExt;
         let mut text_parts = Vec::new();
+        let mut thinking_parts = Vec::new();
         let mut tool_inputs: std::collections::HashMap<usize, Vec<String>> = std::collections::HashMap::new();
         let mut tool_names: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
         let mut tool_ids: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
@@ -177,6 +178,8 @@ impl ProviderAdapter for ClaudeAdapter {
                             tool_names.insert(idx, event["content_block"]["name"].as_str().unwrap_or("").to_string());
                             tool_ids.insert(idx, event["content_block"]["id"].as_str().unwrap_or("").to_string());
                             tool_inputs.insert(idx, Vec::new());
+                        } else if event["content_block"]["type"].as_str() == Some("thinking") {
+                            thinking_parts.push(event["content_block"]["thinking"].as_str().unwrap_or("").to_string());
                         }
                     }
                     "content_block_delta" => {
@@ -188,6 +191,16 @@ impl ProviderAdapter for ClaudeAdapter {
                                 event: StreamEventType::Text,
                                 delta: text.to_string(),
                                 full_text: text_parts.join(""),
+                                session_id: String::new(),
+                                run_id: String::new(),
+                            });
+                        } else if event["delta"]["type"].as_str() == Some("thinking_delta") {
+                            let thinking = event["delta"]["thinking"].as_str().unwrap_or("");
+                            thinking_parts.push(thinking.to_string());
+                            handler(StreamEvent {
+                                event: StreamEventType::Thinking,
+                                delta: thinking.to_string(),
+                                full_text: thinking_parts.join(""),
                                 session_id: String::new(),
                                 run_id: String::new(),
                             });
@@ -210,6 +223,13 @@ impl ProviderAdapter for ClaudeAdapter {
         let full_text = text_parts.join("");
         if !full_text.is_empty() {
             content.push(ContentBlock::text(&full_text));
+        }
+        let full_thinking = thinking_parts.join("");
+        if !full_thinking.is_empty() {
+            content.push(ContentBlock::Thinking {
+                thinking: full_thinking,
+                signature: None,
+            });
         }
 
         for (idx, buf) in &tool_inputs {
