@@ -54,10 +54,10 @@ pub struct ToolCallResult {
 
 /// 工具管理器
 pub struct ToolManager {
-    /// 已注册工具定义: tool_name -> ToolRegistration
-    registrations: RwLock<HashMap<String, ToolRegistration>>,
-    /// 工具定义（协议层）: tool_name -> Tool
-    definitions: RwLock<HashMap<String, Tool>>,
+    /// 已注册工具定义: session_id -> (tool_name -> ToolRegistration)
+    registrations: RwLock<HashMap<String, HashMap<String, ToolRegistration>>>,
+    /// 工具定义（协议层）: session_id -> (tool_name -> Tool)
+    definitions: RwLock<HashMap<String, HashMap<String, Tool>>>,
     event_bus: Arc<EventBus>,
 }
 
@@ -70,37 +70,87 @@ impl ToolManager {
         }
     }
 
+    fn scope_key(session_id: &str) -> String {
+        session_id.to_string()
+    }
+
     /// 注册工具
-    pub fn register(&self, tool: Tool, registration: ToolRegistration) {
+    pub fn register(&self, session_id: &str, tool: Tool, registration: ToolRegistration) {
+        let scope = Self::scope_key(session_id);
         let name = tool.name.clone();
-        info!(tool_name = %name, client_id = %registration.client_id, "tool registered");
-        self.definitions.write().unwrap().insert(name.clone(), tool);
-        self.registrations.write().unwrap().insert(name.clone(), registration);
+        info!(session_id = %session_id, tool_name = %name, client_id = %registration.client_id, "tool registered");
+        self.definitions.write().unwrap()
+            .entry(scope.clone())
+            .or_default()
+            .insert(name.clone(), tool);
+        self.registrations.write().unwrap()
+            .entry(scope)
+            .or_default()
+            .insert(name.clone(), registration);
         self.event_bus.emit(event!(
             TOOL_REGISTERED,
-            "",
-            serde_json::json!({ "tool_name": name })
+            session_id,
+            serde_json::json!({ "tool_name": name, "session_id": session_id })
         ));
     }
 
+    /// 从持久化快照恢复工具，不触发运行时注册事件。
+    pub fn restore(&self, session_id: &str, tool: Tool, registration: ToolRegistration) {
+        let scope = Self::scope_key(session_id);
+        let name = tool.name.clone();
+        info!(session_id = %session_id, tool_name = %name, client_id = %registration.client_id, "tool restored from snapshot");
+        self.definitions.write().unwrap()
+            .entry(scope.clone())
+            .or_default()
+            .insert(name.clone(), tool);
+        self.registrations.write().unwrap()
+            .entry(scope)
+            .or_default()
+            .insert(name, registration);
+    }
+
     /// 注销工具
-    pub fn unregister(&self, name: &str) {
-        self.definitions.write().unwrap().remove(name);
-        self.registrations.write().unwrap().remove(name);
+    pub fn unregister(&self, session_id: &str, name: &str) {
+        let scope = Self::scope_key(session_id);
+        let mut defs_guard = self.definitions.write().unwrap();
+        if let Some(defs) = defs_guard.get_mut(&scope) {
+            defs.remove(name);
+            let should_remove_scope = defs.is_empty();
+            if should_remove_scope {
+                defs_guard.remove(&scope);
+            }
+        }
+        drop(defs_guard);
+
+        let mut regs_guard = self.registrations.write().unwrap();
+        if let Some(regs) = regs_guard.get_mut(&scope) {
+            regs.remove(name);
+            let should_remove_scope = regs.is_empty();
+            if should_remove_scope {
+                regs_guard.remove(&scope);
+            }
+        }
     }
 
     /// 获取工具定义列表（传给模型）
-    pub fn get_tools(&self) -> Vec<Tool> {
-        self.definitions.read().unwrap().values().cloned().collect()
+    pub fn get_tools(&self, session_id: &str) -> Vec<Tool> {
+        let scope = Self::scope_key(session_id);
+        self.definitions.read().unwrap()
+            .get(&scope)
+            .map(|defs| defs.values().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// 按权限过滤工具
-    pub fn filter_by_permissions(&self, permissions: &[String]) -> Vec<Tool> {
+    pub fn filter_by_permissions(&self, session_id: &str, permissions: &[String]) -> Vec<Tool> {
+        let scope = Self::scope_key(session_id);
         let regs = self.registrations.read().unwrap();
         let defs = self.definitions.read().unwrap();
-        defs.iter()
+        defs.get(&scope)
+            .into_iter()
+            .flat_map(|m| m.iter())
             .filter(|(name, _)| {
-                if let Some(reg) = regs.get(*name) {
+                if let Some(reg) = regs.get(&scope).and_then(|m| m.get(*name)) {
                     reg.permissions.iter().any(|p| permissions.contains(p))
                 } else {
                     true // 无权限要求的工具默认可用
@@ -111,26 +161,42 @@ impl ToolManager {
     }
 
     /// 获取工具的注册信息
-    pub fn get_registration(&self, name: &str) -> Option<ToolRegistration> {
-        self.registrations.read().unwrap().get(name).cloned()
+    pub fn get_registration(&self, session_id: &str, name: &str) -> Option<ToolRegistration> {
+        let scope = Self::scope_key(session_id);
+        self.registrations.read().unwrap()
+            .get(&scope)
+            .and_then(|regs| regs.get(name))
+            .cloned()
     }
 
     /// 检查工具是否已注册
-    pub fn has_tool(&self, name: &str) -> bool {
-        self.definitions.read().unwrap().contains_key(name)
+    pub fn has_tool(&self, session_id: &str, name: &str) -> bool {
+        let scope = Self::scope_key(session_id);
+        self.definitions.read().unwrap()
+            .get(&scope)
+            .map(|defs| defs.contains_key(name))
+            .unwrap_or(false)
     }
 
     pub fn count(&self) -> usize {
-        self.definitions.read().unwrap().len()
+        self.definitions.read().unwrap().values().map(|defs| defs.len()).sum()
     }
 
     /// 获取单个工具定义（含 schema，用于校验）
-    pub fn get_tool(&self, name: &str) -> Option<Tool> {
-        self.definitions.read().unwrap().get(name).cloned()
+    pub fn get_tool(&self, session_id: &str, name: &str) -> Option<Tool> {
+        let scope = Self::scope_key(session_id);
+        self.definitions.read().unwrap()
+            .get(&scope)
+            .and_then(|defs| defs.get(name))
+            .cloned()
     }
 
     /// 获取所有已注册工具名
-    pub fn tool_names(&self) -> Vec<String> {
-        self.definitions.read().unwrap().keys().cloned().collect()
+    pub fn tool_names(&self, session_id: &str) -> Vec<String> {
+        let scope = Self::scope_key(session_id);
+        self.definitions.read().unwrap()
+            .get(&scope)
+            .map(|defs| defs.keys().cloned().collect())
+            .unwrap_or_default()
     }
 }

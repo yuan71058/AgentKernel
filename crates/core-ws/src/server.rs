@@ -27,13 +27,25 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc, oneshot, broadcast};
 use tracing::{info, warn, debug};
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SessionToolSnapshotItem {
+    tool: Tool,
+    #[serde(default)]
+    registration: Option<ToolRegistration>,
+}
+
 /// WS 工具路由器
 ///
 /// 实现 ToolRouter trait，将工具调用路由到 WS 客户端执行。
 /// 通过 oneshot 通道同步等待客户端返回工具执行结果。
 pub struct WsToolRouter {
     event_bus: Arc<core_events::EventBus>,
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>>,
+    pending: Arc<Mutex<HashMap<String, PendingToolCall>>>,
+}
+
+struct PendingToolCall {
+    run_id: String,
+    sender: oneshot::Sender<serde_json::Value>,
 }
 
 impl WsToolRouter {
@@ -47,8 +59,8 @@ impl WsToolRouter {
     /// 解析客户端返回的工具执行结果，唤醒等待中的 execute()
     pub async fn resolve_result(&self, call_id: &str, result: serde_json::Value) {
         let mut map = self.pending.lock().await;
-        if let Some(tx) = map.remove(call_id) {
-            let _ = tx.send(result);
+        if let Some(pending) = map.remove(call_id) {
+            let _ = pending.sender.send(result);
             info!(call_id = %call_id, "tool result resolved");
         } else {
             warn!(call_id = %call_id, "no pending tool call found for result");
@@ -71,7 +83,10 @@ impl ToolRouter for WsToolRouter {
         // 注册 pending，等待客户端返回结果
         {
             let mut map = self.pending.lock().await;
-            map.insert(call_id.to_string(), tx);
+            map.insert(call_id.to_string(), PendingToolCall {
+                run_id: run_id.to_string(),
+                sender: tx,
+            });
         }
 
         // 发射工具调用请求事件（事件转发器会推送给 WS 客户端）
@@ -103,6 +118,12 @@ impl ToolRouter for WsToolRouter {
         }
     }
 
+    async fn cancel_run(&self, run_id: &str) -> Result<(), String> {
+        let mut map = self.pending.lock().await;
+        map.retain(|_, pending| pending.run_id != run_id);
+        Ok(())
+    }
+
     fn as_any(&self) -> &dyn std::any::Any { self }
 }
 
@@ -116,20 +137,18 @@ impl WsServer {
         Self { scaffold }
     }
 
-    /// 启动 WS 服务器 + 静态文件服务
+    /// 启动 WS 服务器
     pub async fn start(&self, addr: &str) -> Result<(), String> {
         let scaffold = self.scaffold.clone();
         let app = Router::new()
             .route("/ws", any(move |ws| {
                 let scaffold = scaffold.clone();
                 async move { handle_ws_upgrade(ws, scaffold).await }
-            }))
-            .fallback(serve_static);
+            }));
 
         let listener = tokio::net::TcpListener::bind(addr).await
             .map_err(|e| format!("bind {} failed: {}", addr, e))?;
         info!("WS server listening on ws://{}/ws", addr);
-        info!("Web UI at http://{}", addr);
 
         axum::serve(listener, app).await
             .map_err(|e| format!("server error: {}", e))
@@ -251,12 +270,17 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
             }
             commands::UNREGISTER_TOOL => {
                 let name = payload["tool_name"].as_str().unwrap_or("");
-                scaffold.unregister_tool(name);
+                if name.is_empty() {
+                    send_err(&tx_clone, &request_id, "tool_name is required").await;
+                    continue;
+                }
                 if !session_id.is_empty() {
-                    if let Err(e) = persist_session_tools(&scaffold, &session_id).await {
-                        warn!(session_id = %session_id, error = %e, "persist session tools failed");
+                    if let Err(e) = remove_session_tool_snapshot(&scaffold, &session_id, name).await {
+                        send_err(&tx_clone, &request_id, &e).await;
+                        continue;
                     }
                 }
+                scaffold.unregister_tool(&session_id, name);
                 send_ok(&tx_clone, &request_id, json!({"unregistered": name, "session_id": session_id})).await;
                 info!(tool = %name, session_id = %session_id, "tool unregistered via ws");
             }
@@ -267,8 +291,19 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
                 handle_get_provider(&scaffold, &tx_clone, &session_id, &request_id).await;
             }
             commands::CANCEL_RUN => {
-                info!(session_id = %session_id, "run.cancel received (TODO: abort)");
-                send_ok(&tx_clone, &request_id, json!({"status": "cancelled"})).await;
+                let run_id = payload["run_id"].as_str().unwrap_or("").to_string();
+                if run_id.is_empty() {
+                    send_err(&tx_clone, &request_id, "run_id is required").await;
+                    continue;
+                }
+                let cancelled = scaffold.cancel_run(&run_id);
+                info!(session_id = %session_id, run_id = %run_id, cancelled, "run.cancel received");
+                send_ok(&tx_clone, &request_id, json!({
+                    "status": if cancelled { "cancelling" } else { "not_found" },
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "cancelled": cancelled,
+                })).await;
             }
             commands::GET_SESSION => {
                 if !session_id.is_empty() {
@@ -381,14 +416,17 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
                 info!(len = new_prompt.len(), session_id = %session_id, "system prompt updated via ws");
             }
             commands::TOOL_LIST => {
+                if !session_id.is_empty() {
+                    let _ = scaffold.restore_session_tools(&session_id);
+                }
                 handle_tool_list(&scaffold, &tx_clone, &session_id, &request_id).await;
             }
             commands::TOOL_GET => {
                 let name = payload["tool_name"].as_str().unwrap_or("");
                 if name.is_empty() {
                     send_err(&tx_clone, &request_id, "tool_name is required").await;
-                } else if let Some(tool) = scaffold.tool_manager.get_tool(name) {
-                    let reg = scaffold.tool_manager.get_registration(name);
+                } else if let Some(tool) = scaffold.tool_manager.get_tool(&session_id, name) {
+                    let reg = scaffold.tool_manager.get_registration(&session_id, name);
                     send_ok(&tx_clone, &request_id, json!({
                         "tool": tool,
                         "registration": reg,
@@ -479,6 +517,8 @@ async fn handle_send_message(
             send_ok(&tx, &request_id, json!({
                 "session_id": resp.session_id,
                 "run_id": resp.run_id,
+                "status": resp.status,
+                "partial_preserved": resp.partial_preserved,
                 "content": resp.content,
                 "usage": {
                     "input_tokens": resp.usage.input_tokens,
@@ -489,25 +529,54 @@ async fn handle_send_message(
             })).await;
         }
         Err(e) => {
-            send_err(&tx, &request_id, &e).await;
+            send_err_payload(&tx, &request_id, e.to_payload()).await;
         }
     }
 }
 
-async fn persist_session_tools(scaffold: &AgentKernel, session_id: &str) -> Result<(), String> {
+fn read_session_tool_snapshot(scaffold: &AgentKernel, session_id: &str) -> Vec<SessionToolSnapshotItem> {
+    scaffold.session_mgr
+        .get_session_tools(session_id)
+        .and_then(|v| serde_json::from_value::<Vec<SessionToolSnapshotItem>>(v).ok())
+        .unwrap_or_default()
+}
+
+async fn save_session_tool_snapshot(
+    scaffold: &AgentKernel,
+    session_id: &str,
+    snapshot: &[SessionToolSnapshotItem],
+) -> Result<(), String> {
     if session_id.is_empty() {
         return Ok(());
     }
     scaffold.session_mgr.get_or_create(session_id).await?;
-    let tools = scaffold.tool_manager.get_tools();
-    let list: Vec<serde_json::Value> = tools.iter().map(|t| {
-        let reg = scaffold.tool_manager.get_registration(&t.name);
-        json!({
-            "tool": t,
-            "registration": reg,
-        })
-    }).collect();
-    scaffold.session_mgr.set_session_tools(session_id, json!(list)).await
+    let value = serde_json::to_value(snapshot).map_err(|e| e.to_string())?;
+    scaffold.session_mgr.set_session_tools(session_id, value).await
+}
+
+async fn upsert_session_tool_snapshot(
+    scaffold: &AgentKernel,
+    session_id: &str,
+    tool: &Tool,
+    registration: &ToolRegistration,
+) -> Result<(), String> {
+    let mut snapshot = read_session_tool_snapshot(scaffold, session_id);
+    snapshot.retain(|item| item.tool.name != tool.name);
+    snapshot.push(SessionToolSnapshotItem {
+        tool: tool.clone(),
+        registration: Some(registration.clone()),
+    });
+    save_session_tool_snapshot(scaffold, session_id, &snapshot).await
+}
+
+async fn remove_session_tool_snapshot(
+    scaffold: &AgentKernel,
+    session_id: &str,
+    tool_name: &str,
+) -> Result<(), String> {
+    let mut snapshot = read_session_tool_snapshot(scaffold, session_id);
+    snapshot.retain(|item| item.tool.name != tool_name);
+    save_session_tool_snapshot(scaffold, session_id, &snapshot).await
 }
 
 async fn handle_tool_list(
@@ -516,9 +585,14 @@ async fn handle_tool_list(
     session_id: &str,
     request_id: &str,
 ) {
-    let tools = scaffold.tool_manager.get_tools();
+    let persisted_snapshot = if !session_id.is_empty() {
+        scaffold.session_mgr.get_session_tools(session_id)
+    } else {
+        None
+    };
+    let tools = scaffold.tool_manager.get_tools(session_id);
     let list: Vec<serde_json::Value> = tools.iter().map(|t| {
-        let reg = scaffold.tool_manager.get_registration(&t.name);
+        let reg = scaffold.tool_manager.get_registration(session_id, &t.name);
         let empty_tags: Vec<String> = vec![];
         json!({
             "name": t.name,
@@ -534,7 +608,7 @@ async fn handle_tool_list(
         "session_id": session_id,
         "count": list.len(),
         "tools": list,
-        "persisted_snapshot": if !session_id.is_empty() { scaffold.session_mgr.get_session_tools(session_id) } else { None },
+        "persisted_snapshot": persisted_snapshot,
     })).await;
 }
 
@@ -575,13 +649,14 @@ async fn handle_register_tool(
         timeout_ms: timeout,
         tags,
     };
-    scaffold.register_tool(tool, reg);
-
     if !session_id.is_empty() {
-        if let Err(e) = persist_session_tools(scaffold, session_id).await {
-            warn!(session_id = %session_id, error = %e, "persist session tools failed");
+        if let Err(e) = upsert_session_tool_snapshot(scaffold, session_id, &tool, &reg).await {
+            send_err(tx, request_id, &e).await;
+            return;
         }
     }
+
+    scaffold.register_tool(session_id, tool.clone(), reg.clone());
 
     scaffold.event_bus.emit(EventEnvelope::new(TOOL_REGISTERED, session_id)
         .with_payload(json!({"tool_name": name, "client_id": client_id, "session_id": session_id})));
@@ -652,7 +727,7 @@ async fn handle_session_info(
         },
         "provider_override": has_override,
         "system_prompt_override": scaffold.session_mgr.get_system_prompt(session_id).is_some(),
-        "tool_count": scaffold.tool_manager.tool_names().len(),
+        "tool_count": scaffold.tool_manager.tool_names(session_id).len(),
     })).await;
 }
 
@@ -809,7 +884,7 @@ async fn handle_system_stats(
     request_id: &str,
 ) {
     let session_count = scaffold.session_mgr.session_count();
-    let tool_count = scaffold.tool_manager.tool_names().len();
+    let tool_count = scaffold.tool_manager.count();
     let config = &scaffold.config;
 
     send_ok(tx, request_id, json!({
@@ -1216,61 +1291,13 @@ async fn send_ok(tx: &mpsc::Sender<WsMessage>, request_id: &str, payload: serde_
 }
 
 async fn send_err(tx: &mpsc::Sender<WsMessage>, request_id: &str, error: &str) {
+    send_err_payload(tx, request_id, json!({"error": error})).await;
+}
+
+async fn send_err_payload(tx: &mpsc::Sender<WsMessage>, request_id: &str, payload: serde_json::Value) {
     let _ = tx.send(WsMessage::Response {
         request_id: request_id.to_string(),
         success: false,
-        payload: json!({"error": error}),
+        payload,
     }).await;
-}
-
-// ─── Static File Server ────────────────────────────────────────
-
-async fn serve_static(uri: axum::http::Uri) -> impl axum::response::IntoResponse {
-    let path = uri.path().trim_start_matches('/');
-    let path = if path.is_empty() { "index.html" } else { path };
-
-    // 查找 web/static/ 目录：优先从可执行文件目录往上找
-    let exe_dir = std::env::current_exe().ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
-
-    let candidates: Vec<String> = {
-        let mut v = Vec::new();
-        // 从可执行文件往上找（debug/ → target/ → agentkernel/）
-        if let Some(ref dir) = exe_dir {
-            let mut d = dir.to_path_buf();
-            for _ in 0..5 {
-                v.push(d.join("web").join("static").join(path).to_string_lossy().to_string());
-                if !d.pop() { break; }
-            }
-        }
-        // 当前工作目录
-        v.push(format!("web/static/{}", path));
-        v
-    };
-
-    for candidate in &candidates {
-        if let Ok(content) = tokio::fs::read(candidate).await {
-            let mime = mime_from_path(path);
-            return axum::response::Response::builder()
-                .header("content-type", mime)
-                .body(axum::body::Body::from(content))
-                .unwrap();
-        }
-    }
-
-    axum::response::Response::builder()
-        .status(404)
-        .body(axum::body::Body::from("Not Found"))
-        .unwrap()
-}
-
-fn mime_from_path(path: &str) -> &'static str {
-    if path.ends_with(".html") { "text/html; charset=utf-8" }
-    else if path.ends_with(".js") { "application/javascript" }
-    else if path.ends_with(".css") { "text/css" }
-    else if path.ends_with(".json") { "application/json" }
-    else if path.ends_with(".svg") { "image/svg+xml" }
-    else if path.ends_with(".png") { "image/png" }
-    else if path.ends_with(".ico") { "image/x-icon" }
-    else { "application/octet-stream" }
 }

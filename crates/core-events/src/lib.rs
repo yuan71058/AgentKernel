@@ -15,6 +15,7 @@ pub mod event_types {
     pub const SESSION_CREATED: &str = "session.created";
     pub const SESSION_CLOSED: &str = "session.closed";
     pub const RUN_STARTED: &str = "run.started";
+    pub const RUN_CANCELLED: &str = "run.cancelled";
     pub const RUN_COMPLETED: &str = "run.completed";
     pub const MODEL_DELTA: &str = "model.delta";
     pub const MODEL_COMPLETED: &str = "model.completed";

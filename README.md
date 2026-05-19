@@ -8,7 +8,7 @@
   </p>
 </div>
 
-<br/>
+<br />
 
 > 💡 **让你的网页、脚本、服务端项目不再反复从 0 写 Agent Runtime。**
 
@@ -24,12 +24,32 @@ AgentKernel 不是聊天 UI，也不是业务 Agent，而是 **Agent Runtime Ker
 
 **核心原则：Kernel 只管运行时，业务端只管编排。**
 
-| ⚙️ AgentKernel (运行时核心) | 🧠 业务端 (应用编排) |
-| :--- | :--- |
-| **模型交互**：模型调用、并发调度 | **工具实现**：具体工具执行逻辑与权限 |
-| **状态管理**：Session 管理、持久化存储 | **业务逻辑**：业务提示词、记忆系统提取 |
-| **上下文**：Context 构建、主动暴露阈值事件 | **压缩策略**：MCP 编排、智能上下文压缩 |
-| **通信协议**：WebSocket IPC、事件流分发 | **前端交互**：最终产品 UI 展示 |
+| ⚙️ AgentKernel (运行时核心)       | 🧠 业务端 (应用编排)           |
+| :--------------------------- | :---------------------- |
+| **模型交互**：模型调用、并发调度           | **工具实现**：具体工具执行逻辑与权限    |
+| **状态管理**：Session 管理、持久化存储    | **业务逻辑**：业务提示词、记忆系统提取   |
+| **上下文**：Context 构建、主动暴露阈值事件  | **压缩策略**：MCP 编排、智能上下文压缩 |
+| **通信协议**：WebSocket IPC、事件流分发 | **前端交互**：最终产品 UI 展示     |
+
+> 💡 **接入注意**
+> AgentKernel 更适合作为“单一执行体系”的 Runtime 内核：同一套业务执行端可复用多个 `session`。\
+> 如果是多用户共享会话或协同查看，建议由业务端在上层做分流、广播和权限控制，而不是让多个用户端直接连接 Core 的同一个 `session`。\
+> Core 负责运行时与协议边界，不负责多用户协同编排。
+
+### 推荐接入方式
+
+```mermaid
+flowchart LR
+    U[用户浏览器] --> B[业务网站 / Python or Node.js 微服务]
+    B -->|启动时建立长期 WS| K[AgentKernel Core]
+    B -->|按不同 session_id 复用同一连接| K
+    K -->|response / event / tool.call.request| B
+    B -->|HTTP / SSE / WebSocket| U
+```
+
+- 推荐由业务服务在启动时与 Core 保持长期 WebSocket 连接，后续复用这条连接处理多个 `session`。
+- 用户请求先进入业务服务，再由业务服务决定 `session`、权限、上下文和工具执行。
+- 如果是多人共享会话，建议由业务服务内部做广播和分流，不要让多个用户端直接连接 Core 的同一个 `session`。
 
 ## 🏗️ 架构与原理
 
@@ -77,13 +97,13 @@ sequenceDiagram
 
 ## ⚖️ 适用场景对比
 
-| ✅ 适合 AgentKernel 的场景 | ❌ 不适合的场景 |
-| :--- | :--- |
-| - 给现有业务系统/Web接入 AI Runtime<br>- 开发跨语言自动化脚本系统<br>- 构建多 Agent 编排平台底层<br>- 打造类似 ComfyUI 的 Agent 运行节点 | - 只需要简单调用一次 LLM 接口<br>- 需要开箱即用的完整 Coding Agent (如 Cursor/Aider)<br>- 寻找现成的聊天 UI 产品 |
+| ✅ 适合 AgentKernel 的场景                                                                  | ❌ 不适合的场景                                                                   |
+| :------------------------------------------------------------------------------------ | :------------------------------------------------------------------------- |
+| - 给现有业务系统/Web接入 AI Runtime- 开发跨语言自动化脚本系统- 构建多 Agent 编排平台底层- 打造类似 ComfyUI 的 Agent 运行节点 | - 只需要简单调用一次 LLM 接口- 需要开箱即用的完整 Coding Agent (如 Cursor/Aider)- 寻找现成的聊天 UI 产品 |
 
 ## 🚀 快速开始
 
-只需三步，即可在本地启动 AgentKernel 调试环境：
+先启动 Core：
 
 ```bash
 git clone https://github.com/cih1996/AgentKernel.git
@@ -91,9 +111,22 @@ cd AgentKernel
 cargo run
 ```
 
-启动成功后，直接在浏览器中打开：[http://localhost:9991/](http://localhost:9991/) 即可进入 Web 调试控制台。
+- `cargo run` 启动的是**无前端的 Core 内核服务**
+- 默认 WebSocket 地址：`ws://localhost:9991/ws`
+- 如果你的默认二进制不是服务端，也可以显式使用 `cargo run -p agentkernel-server`
 
-> 💡 WebSocket 接口地址默认为：`ws://localhost:9991/ws`
+如果需要本地网页调试台，再单独启动：
+
+```bash
+cd web
+python3 server.py
+```
+
+- 调试页默认地址：<http://127.0.0.1:8899>
+- `web/server.py` 会先检查 Core 是否已运行，未运行会直接提示并退出
+- 推荐顺序是先启动 Core，再启动调试页
+
+> 💡 业务正式接入时，推荐让你的 Python / Node.js / Go / Rust 服务常驻连接 Core，再按不同 `session_id` 复用连接；如果用户需要“停止生成”，应由业务服务发送 `run.cancel`，不要让多个最终客户端直接争抢同一个共享 `session`。
 
 ## 📦 存储结构与 API
 
@@ -101,6 +134,7 @@ cargo run
 <summary><b>📂 查看存储结构</b></summary>
 
 当前优先使用文件式持久化，方便调试与查看全量日志（后续将引入 SQLite 作为主存储）：
+
 ```text
 .aicore/
 └── sessions/
@@ -110,12 +144,14 @@ cargo run
         ├── events.jsonl
         └── ...
 ```
+
 </details>
 
 <details>
 <summary><b>🔌 查看 WebSocket 协议示例</b></summary>
 
 **发送消息**
+
 ```json
 {
   "command": "session.send",
@@ -125,6 +161,7 @@ cargo run
 ```
 
 **注册工具**
+
 ```json
 {
   "command": "tool.register",
@@ -134,6 +171,7 @@ cargo run
 ```
 
 **接收调用与回传结果**
+
 ```json
 // Kernel -> Client (Event)
 {
@@ -148,6 +186,7 @@ cargo run
   "payload": { "call_id": "xxx", "result": "2026-05-18 08:30:00" }
 }
 ```
+
 </details>
 
 ## 📸 调试控制台截图
@@ -172,7 +211,7 @@ cargo run
 - [ ] SQLite 主存储与多 client 权限边界
 - [ ] SDK 示例 (JS / Python / Go)
 
-**License:** MIT  
+**License:** MIT\
 **社区交流:** QQ群 `250892941`
 
-[![Star History Chart](https://api.star-history.com/svg?repos=cih1996/AgentKernel&type=Date)](https://www.star-history.com/#cih1996/AgentKernel&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=cih1996/AgentKernel\&type=Date)](https://www.star-history.com/#cih1996/AgentKernel\&Date)

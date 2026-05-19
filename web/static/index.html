@@ -5,171 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AgentKernel — Runtime Console</title>
 <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-<style>
-:root {
-  --bg: #0d1117; --bg2: #161b22; --bg3: #1c2333; --bg4: #21283b;
-  --border: #30363d; --border2: #444c56;
-  --text: #e6edf3; --text2: #8b949e; --text3: #656d76;
-  --blue: #58a6ff; --green: #3fb950; --orange: #d29922; --red: #f85149;
-  --purple: #bc8cff; --cyan: #39d353; --pink: #f778ba;
-  --accent: #58a6ff;
-}
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: 13px; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
-.app { display: flex; flex-direction: column; height: 100vh; }
-
-/* Header */
-.header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--bg2); border-bottom: 1px solid var(--border); flex-shrink: 0; }
-.logo { font-weight: 700; font-size: 15px; color: var(--accent); letter-spacing: 1px; }
-.logo span { color: var(--text2); font-weight: 400; font-size: 11px; margin-left: 8px; }
-.ws-url { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; color: var(--text); font-size: 12px; font-family: inherit; outline: none; }
-.ws-url:focus { border-color: var(--accent); }
-.btn { padding: 6px 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg3); color: var(--text); cursor: pointer; font-size: 12px; font-family: inherit; transition: all 0.15s; }
-.btn:hover { background: var(--bg4); border-color: var(--border2); }
-.btn-connect { background: #1a3a2a; border-color: #2ea043; color: var(--green); }
-.btn-connect:hover { background: #224d35; }
-.btn-disconnect { background: #3d1a1a; border-color: var(--red); color: var(--red); }
-.btn-disconnect:hover { background: #4d2222; }
-.status { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text2); }
-.status-dot { width: 8px; height: 8px; border-radius: 50%; }
-.status-dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
-.status-dot.disconnected { background: var(--red); }
-
-/* Main layout */
-.main { flex: 1; display: flex; overflow: hidden; }
-.left { flex: 1; display: flex; flex-direction: column; border-right: 1px solid var(--border); min-width: 0; }
-.right { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-
-/* Chat panel */
-.chat-header { padding: 10px 14px; background: var(--bg2); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
-.chat-header h3 { font-size: 12px; color: var(--text2); font-weight: 500; }
-.chat-body { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-.msg { padding: 8px 12px; border-radius: 8px; max-width: 85%; word-break: break-word; line-height: 1.5; }
-.msg-user { align-self: flex-end; background: #1a3a5c; border: 1px solid #264f78; }
-.msg-assistant { align-self: flex-start; background: var(--bg3); border: 1px solid var(--border); }
-.msg-system { align-self: center; background: #2a1a3d; border: 1px solid #3d2a5c; color: var(--purple); font-size: 11px; }
-.msg-error { align-self: center; background: #3d1a1a; border: 1px solid #5c2a2a; color: var(--red); font-size: 11px; }
-.msg-meta { font-size: 10px; color: var(--text3); margin-top: 4px; }
-.chat-input { display: flex; gap: 8px; padding: 10px 14px; background: var(--bg2); border-top: 1px solid var(--border); }
-.chat-input input { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; color: var(--text); font-size: 12px; font-family: inherit; outline: none; }
-.chat-input input:focus { border-color: var(--accent); }
-.chat-input .btn-send { padding: 8px 20px; }
-
-/* Event stream */
-.stream-header { padding: 10px 14px; background: var(--bg2); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
-.stream-header h3 { font-size: 12px; color: var(--text2); font-weight: 500; }
-.stream-body { flex: 1; overflow-y: auto; padding: 0; }
-.event-item { display: flex; gap: 10px; padding: 6px 14px; border-bottom: 1px solid var(--border); font-size: 11.5px; align-items: flex-start; transition: background 0.1s; }
-.event-item:hover { background: var(--bg3); }
-.event-item.new { animation: flash 0.8s ease-out; }
-@keyframes flash { 0% { background: #1a3a5c; } 100% { background: transparent; } }
-.event-time { color: var(--text3); font-size: 10px; white-space: nowrap; min-width: 55px; flex-shrink: 0; padding-top: 1px; }
-.event-type { font-weight: 600; min-width: 140px; flex-shrink: 0; padding-top: 1px; }
-.event-session { color: var(--text3); font-size: 10px; min-width: 80px; flex-shrink: 0; padding-top: 1px; }
-.event-payload { color: var(--text2); word-break: break-all; flex: 1; min-width: 0; }
-.event-payload code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 10.5px; color: var(--cyan); }
-
-/* Event type colors */
-.evt-model_delta { color: var(--cyan); }
-.evt-model_completed { color: var(--green); }
-.evt-tool_call_request { color: var(--orange); }
-.evt-tool_call_result { color: var(--pink); }
-.evt-tool_registered { color: var(--purple); }
-.evt-session_created { color: var(--blue); }
-.evt-session_closed { color: var(--text3); }
-.evt-run_started { color: var(--blue); }
-.evt-run_completed { color: var(--green); }
-.evt-error { color: var(--red); }
-.evt-context_threshold_reached { color: var(--orange); }
-.evt-prompt_attached { color: var(--purple); }
-.evt-response { color: var(--green); }
-.evt-stream { color: var(--cyan); }
-
-/* Tabs for right panel */
-.tabs { display: flex; background: var(--bg2); border-bottom: 1px solid var(--border); }
-.tab { padding: 8px 16px; cursor: pointer; font-size: 11px; color: var(--text2); border-bottom: 2px solid transparent; transition: all 0.15s; }
-.tab:hover { color: var(--text); background: var(--bg3); }
-.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-.tab-badge { display: inline-block; min-width: 16px; padding: 0 4px; height: 14px; line-height: 14px; text-align: center; border-radius: 7px; background: var(--bg4); color: var(--text3); font-size: 9px; margin-left: 4px; }
-
-/* Tools panel */
-.tools-body { flex: 1; overflow-y: auto; padding: 12px; }
-.tool-card { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 8px; }
-.tool-name { font-weight: 600; color: var(--purple); font-size: 12px; }
-.tool-desc { color: var(--text2); font-size: 11px; margin-top: 4px; }
-.tool-meta { display: flex; gap: 12px; margin-top: 6px; font-size: 10px; color: var(--text3); }
-.tool-tag { background: var(--bg); padding: 1px 6px; border-radius: 3px; color: var(--cyan); }
-
-/* Stats */
-.stats-panel { padding: 12px; }
-.stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 11px; }
-.stat-label { color: var(--text2); }
-.stat-value { color: var(--text); font-weight: 600; }
-
-/* Raw message card */
-.raw-card { border-bottom: 1px solid var(--border); padding: 6px 12px; cursor: pointer; transition: background 0.1s; }
-.raw-card:hover { background: var(--bg3); }
-.raw-card.new { animation: flash 0.8s ease-out; }
-.raw-card-header { display: flex; align-items: center; gap: 8px; }
-.raw-dir { font-size: 10px; font-weight: 700; min-width: 18px; text-align: center; flex-shrink: 0; }
-.raw-dir.in { color: var(--green); }
-.raw-dir.out { color: var(--orange); }
-.raw-label { font-weight: 600; font-size: 12px; min-width: 80px; flex-shrink: 0; }
-.raw-brief { color: var(--text2); font-size: 11px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.raw-brief .raw-tag { display: inline-block; background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 0 5px; margin: 0 3px; font-size: 10px; color: var(--cyan); }
-.raw-brief .raw-tag.err { color: var(--red); border-color: #5c2a2a; }
-.raw-expand { color: var(--text3); font-size: 10px; flex-shrink: 0; }
-.raw-merge-badge { display: inline-block; background: var(--cyan); color: var(--bg); font-size: 10px; font-weight: 700; padding: 0 6px; border-radius: 8px; min-width: 24px; text-align: center; flex-shrink: 0; }
-.raw-detail { margin-top: 6px; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; overflow-x: auto; max-height: 300px; overflow-y: auto; }
-.raw-detail pre { margin: 0; font-size: 11px; color: var(--text2); white-space: pre-wrap; word-break: break-all; }
-
-/* Filter */
-.filter-bar { display: flex; gap: 4px; padding: 6px 14px; background: var(--bg2); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-.filter-chip { padding: 2px 8px; border-radius: 10px; font-size: 10px; cursor: pointer; border: 1px solid var(--border); color: var(--text2); transition: all 0.15s; }
-.filter-chip.active { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,0.1); }
-.filter-chip:hover { border-color: var(--border2); }
-
-/* Scrollbar */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--border2); }
-
-/* Empty state */
-.empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text3); font-size: 12px; flex-direction: column; gap: 8px; }
-.empty-icon { font-size: 32px; opacity: 0.3; }
-
-/* Send raw command */
-.raw-input { display: flex; gap: 8px; padding: 6px 14px; background: var(--bg2); border-top: 1px solid var(--border); }
-.raw-input input { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; color: var(--text); font-size: 11px; font-family: inherit; outline: none; }
-.raw-input input:focus { border-color: var(--accent); }
-
-/* Config panel */
-.config-body { flex: 1; overflow-y: auto; padding: 14px; }
-.config-section { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
-.config-title { font-size: 12px; font-weight: 600; color: var(--accent); margin-bottom: 12px; }
-.config-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-.config-row label { min-width: 75px; font-size: 11px; color: var(--text2); text-align: right; flex-shrink: 0; }
-.config-input { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 5px 10px; color: var(--text); font-size: 11.5px; font-family: inherit; outline: none; }
-.config-input:focus { border-color: var(--accent); }
-select.config-input { cursor: pointer; }
-select.config-input option { background: var(--bg); color: var(--text); }
-.config-row-group { display: flex; gap: 10px; margin-bottom: 8px; }
-.config-actions { display: flex; gap: 8px; margin-top: 12px; }
-.config-hint { margin-top: 8px; font-size: 11px; color: var(--green); padding: 4px 0; }
-.config-templates { display: flex; gap: 6px; flex-wrap: wrap; }
-
-/* Streaming cursor */
-.cursor-blink { animation: blink 0.8s step-end infinite; color: var(--accent); }
-@keyframes blink { 50% { opacity: 0; } }
-</style>
+<script src="https://unpkg.com/marked@9.1.2/marked.min.js"></script>
+<script src="https://unpkg.com/dompurify@3.0.6/dist/purify.min.js"></script>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div id="app">
   <div class="app">
     <!-- Header -->
     <div class="header">
-      <div class="logo">AGENTKERNEL <span>RUNTIME CONSOLE</span></div>
+      <div class="logo">
+        <svg class="icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+        AGENTKERNEL <span>RUNTIME CONSOLE</span>
+      </div>
       <input class="ws-url" v-model="wsUrl" placeholder="ws://localhost:9991/ws"
              @keyup.enter="connected ? disconnect() : connect()">
       <div class="status">
@@ -179,73 +27,75 @@ select.config-input option { background: var(--bg); color: var(--text); }
       </div>
       <button class="btn" :class="connected ? 'btn-disconnect' : 'btn-connect'"
               @click="connected ? disconnect() : connect()">
+        <svg v-if="connected" class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg>
+        <svg v-else class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64A9 9 0 0 1 20.77 15"></path><path d="M6.16 6.16a9 9 0 1 0 12.68 12.68"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg>
         {{ connected ? '断开' : '连接' }}
       </button>
     </div>
 
     <div class="main">
-      <!-- Left: Chat -->
-      <div class="left">
-        <div class="chat-header">
-          <h3>CHAT — 对话调试</h3>
-          <div style="display:flex;gap:8px;align-items:center">
-            <input v-model="sessionId" placeholder="session_id"
-                   style="width:140px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:3px 8px;color:var(--text);font-size:11px;font-family:inherit;outline:none;">
-            <select v-model="selectedSessionId" @change="selectSession(selectedSessionId)"
-                    :disabled="!connected"
-                    style="width:190px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:3px 8px;color:var(--text);font-size:11px;font-family:inherit;outline:none;">
-              <option value="">选择已有 Session...</option>
-              <option v-for="s in sessions" :key="s.session_id" :value="s.session_id">
-                {{ s.session_id }} · {{ s.title || '未命名' }} · {{ s.message_count || 0 }}条
-              </option>
-            </select>
-            <button class="btn" @click="loadSessions" :disabled="!connected" style="padding:3px 10px;font-size:10px">刷新会话</button>
-            <button class="btn" @click="chatMessages=[]" style="padding:3px 10px;font-size:10px">清空</button>
-          </div>
-        </div>
-        <div class="chat-body" ref="chatBody">
-          <template v-if="chatMessages.length === 0">
-            <div class="empty"><div class="empty-icon">💬</div>发送消息开始对话调试</div>
-          </template>
-          <template v-for="(m, i) in chatMessages" :key="i">
-            <div class="msg" :class="'msg-' + m.role">
-              <div style="white-space:pre-wrap">{{ m.text }}</div>
-              <div class="msg-meta" v-if="m.meta">{{ m.meta }}</div>
-            </div>
-          </template>
-          <!-- 流式消息（实时渲染） -->
-          <template v-if="isStreaming">
-            <div class="msg msg-assistant">
-              <div style="white-space:pre-wrap">{{ streamingText }}<span class="cursor-blink">▊</span></div>
-              <div class="msg-meta">生成中...</div>
-            </div>
-          </template>
-        </div>
-        <div class="chat-input">
-          <input v-model="chatInput" placeholder="输入消息... (Enter 发送)" @keyup.enter="sendChat" :disabled="!connected">
-          <button class="btn btn-send" @click="sendChat" :disabled="!connected || !chatInput.trim()">发送</button>
-        </div>
-      </div>
-
       <!-- Right: Events & Tools -->
       <div class="right">
         <div class="tabs">
-          <div class="tab" :class="{active: rightTab==='events'}" @click="rightTab='events'">
-            事件流 <span class="tab-badge" v-if="events.length">{{ events.length }}</span>
-          </div>
-          <div class="tab" :class="{active: rightTab==='tools'}" @click="rightTab='tools'">
-            工具 <span class="tab-badge" v-if="tools.length">{{ tools.length }}</span>
-          </div>
-          <div class="tab" :class="{active: rightTab==='raw'}" @click="rightTab='raw'">
-            原始消息 <span class="tab-badge" v-if="rawMessages.length">{{ rawMessages.length }}</span>
+          <div class="tab" :class="{active: rightTab==='summary'}" @click="rightTab='summary'">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10"></path><path d="M18 20V4"></path><path d="M6 20v-4"></path></svg>
+            状态摘要
           </div>
           <div class="tab" :class="{active: rightTab==='context'}" @click="rightTab='context'">
-            上下文 <span class="tab-badge" v-if="contextPreview.counts">{{ contextPreview.counts.active_messages || 0 }}</span>
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+            上下文管理 <span class="tab-badge" v-if="contextPreview.counts">{{ contextPreview.counts.active_messages || 0 }}</span>
           </div>
-          <div class="tab" :class="{active: rightTab==='stats'}" @click="rightTab='stats'">统计</div>
-          <div class="tab" :class="{active: rightTab==='prompt'}" @click="rightTab='prompt'">提示词</div>
-          <div class="tab" :class="{active: rightTab==='config'}" @click="rightTab='config'">配置</div>
+          <div class="tab" :class="{active: rightTab==='prompt'}" @click="rightTab='prompt'">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"></polyline><line x1="9" y1="20" x2="15" y2="20"></line><line x1="12" y1="4" x2="12" y2="20"></line></svg>
+            系统提示词
+          </div>
+          <div class="tab" :class="{active: rightTab==='config'}" @click="rightTab='config'">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+            供应商
+          </div>
+          <div class="tab" :class="{active: rightTab==='events'}" @click="rightTab='events'">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 11a9 9 0 0 1 9 9"></path><path d="M4 4a16 16 0 0 1 16 16"></path><circle cx="5" cy="19" r="1"></circle></svg>
+            事件流 <span class="tab-badge" v-if="events.length">{{ events.length }}</span>
+          </div>
+          <div class="tab" :class="{active: rightTab==='raw'}" @click="rightTab='raw'">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+            通讯日志 <span class="tab-badge" v-if="rawMessages.length">{{ rawMessages.length }}</span>
+          </div>
+          <div class="tab" :class="{active: rightTab==='messages'}" @click="rightTab='messages'; loadFullMessages(true)">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+            全部历史对话 <span class="tab-badge" v-if="fullMessages.length">{{ fullMessages.length }}</span>
+          </div>
+          <div class="tab" :class="{active: rightTab==='tools'}" @click="rightTab='tools'">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>
+            工具 <span class="tab-badge" v-if="tools.length">{{ tools.length }}</span>
+          </div>
         </div>
+
+        <template v-if="rightTab==='summary'">
+          <div class="config-body">
+            <div class="config-section">
+              <div class="config-title">运行状态 <span>当前会话与当前 run 的实时摘要</span></div>
+              <div class="stats-panel" style="margin-top:12px">
+                <div class="stat-row"><span class="stat-label">连接状态</span><span class="stat-value" :style="{color: connected ? 'var(--green)' : 'var(--red)'}">{{ connected ? '已连接' : '未连接' }}</span></div>
+                <div class="stat-row"><span class="stat-label">Session ID</span><span class="stat-value" style="font-size:11px;font-family:ui-monospace,monospace">{{ sessionId }}</span></div>
+                <div class="stat-row"><span class="stat-label">当前 Run</span><span class="stat-value" style="font-size:11px;font-family:ui-monospace,monospace">{{ currentRunId || '—' }}</span></div>
+                <div class="stat-row"><span class="stat-label">Run 状态</span><span class="stat-value">{{ runStatusLabel(currentRunStatus) }}</span></div>
+                <div class="stat-row"><span class="stat-label">会话消息数</span><span class="stat-value">{{ chatMessages.length }}</span></div>
+                <div class="stat-row"><span class="stat-label">事件数量</span><span class="stat-value">{{ events.length }}</span></div>
+                <div class="stat-row"><span class="stat-label">通讯日志</span><span class="stat-value">{{ rawMessages.length }}</span></div>
+                <div class="stat-row"><span class="stat-label">已注册工具</span><span class="stat-value">{{ tools.length }}</span></div>
+              </div>
+            </div>
+
+            <div class="config-section">
+              <div class="config-title">面板作用说明</div>
+              <div class="config-hint">事件流只展示 Core 主动推送的运行时事件，例如 `run.started`、`model.delta`、`tool.call.request`、`run.cancelled`。</div>
+              <div class="config-hint">通讯日志展示 WS 收发原文，适合核对命令、响应和事件是否真实到达。</div>
+              <div class="config-hint">全部历史对话展示 session 下已经落盘的全量消息，不等同于当前轮可见上下文。</div>
+              <div class="config-hint">停止生成会发送 `run.cancel`，如果模型已输出部分内容，Core 会尽量保留并通过 `run.cancelled` 告知前端。</div>
+            </div>
+          </div>
+        </template>
 
         <!-- Events tab -->
         <template v-if="rightTab==='events'">
@@ -256,18 +106,20 @@ select.config-input option { background: var(--bg); color: var(--text); }
             <span class="filter-chip" :class="{active: eventFilter==='session'}" @click="eventFilter='session'">会话</span>
             <span class="filter-chip" :class="{active: eventFilter==='context'}" @click="eventFilter='context'">上下文</span>
             <span class="filter-chip" :class="{active: eventFilter==='error'}" @click="eventFilter='error'">错误</span>
-            <button class="btn" @click="events=[]" style="padding:2px 8px;font-size:10px;margin-left:auto">清空</button>
+            <button class="btn" @click="events=[]" style="padding:4px 10px;font-size:11px;margin-left:auto">清空</button>
           </div>
           <div class="stream-body" ref="streamBody">
             <template v-if="filteredEvents.length === 0">
-              <div class="empty"><div class="empty-icon">📡</div>等待事件...</div>
+              <div class="empty">
+                <div class="empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 11a9 9 0 0 1 9 9"></path><path d="M4 4a16 16 0 0 1 16 16"></path><circle cx="5" cy="19" r="1"></circle></svg></div>
+                等待事件...
+              </div>
             </template>
             <template v-for="(e, i) in filteredEvents" :key="i">
               <div class="raw-card" :class="{new: e._new}" @click="e._expanded = !e._expanded">
                 <div class="raw-card-header">
                   <span class="event-time">{{ e.time }}</span>
                   <span class="event-type" :class="'evt-' + e.type.replace(/\./g, '_')">{{ e.label }}</span>
-                  <span class="event-session">{{ e.session || '—' }}</span>
                   <span class="raw-brief" v-html="e.brief"></span>
                   <span class="raw-expand">{{ e._expanded ? '▼' : '▶' }}</span>
                 </div>
@@ -283,36 +135,26 @@ select.config-input option { background: var(--bg); color: var(--text); }
         <template v-if="rightTab==='tools'">
           <div class="stream-header">
             <h3>已注册工具 ({{ tools.length }}) · 执行记录 ({{ toolExecLog.length }})</h3>
-            <button class="btn" @click="tools=[];toolExecLog=[]" style="padding:3px 10px;font-size:10px">清空</button>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-connect" @click="showPresetToolsModal = true" :disabled="!connected" style="padding:4px 10px;font-size:11px">添加注册</button>
+              <button class="btn" @click="tools=[];toolExecLog=[]" style="padding:4px 10px;font-size:11px">清空记录</button>
+            </div>
           </div>
           <div class="tools-body">
-            <!-- 预置工具 -->
-            <div style="font-size:11px;color:var(--text2);margin-bottom:8px;font-weight:600;display:flex;align-items:center;justify-content:space-between">
-              <span>🧰 预置工具（手动注册）</span>
-              <div style="display:flex;gap:6px">
-                <button class="btn" @click="registerPresetTools" :disabled="!connected" style="padding:3px 10px;font-size:10px">注册全部预置工具</button>
-                <button class="btn" @click="loadTools" :disabled="!connected" style="padding:3px 10px;font-size:10px">刷新工具配置</button>
-              </div>
-            </div>
-            <template v-for="t in presetTools" :key="'p'+t.name">
-              <div class="tool-card" style="padding:8px 12px">
-                <div style="display:flex;align-items:center;gap:8px">
-                  <span class="tool-name">{{ t.name }}</span>
-                  <span class="tool-tag" v-for="tag in t.tags" :key="tag">{{ tag }}</span>
-                  <button class="btn" @click="registerPresetTool(t)" :disabled="!connected" style="margin-left:auto;padding:2px 8px;font-size:10px">注册</button>
-                </div>
-                <div class="tool-desc">{{ t.description }}</div>
-              </div>
-            </template>
-
             <!-- 注册的工具 -->
-            <div style="font-size:11px;color:var(--text2);margin:14px 0 8px;font-weight:600">📦 Session 当前工具配置</div>
+            <div style="font-size:13px;color:var(--text);margin-bottom:12px;font-weight:600;display:flex;align-items:center;justify-content:space-between">
+              <span style="display:flex;align-items:center;gap:6px">
+                <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+                Session 当前工具配置
+              </span>
+              <button class="btn" @click="loadTools" :disabled="!connected" style="padding:4px 10px;font-size:11px">刷新配置</button>
+            </div>
             <template v-if="tools.length === 0">
-              <div style="color:var(--text3);font-size:11px;padding:8px 0">暂无注册工具</div>
+              <div style="color:var(--text3);font-size:12px;padding:12px 0;text-align:center">暂无注册工具</div>
             </template>
             <template v-for="(t, i) in tools" :key="'t'+i">
               <div class="tool-card">
-                <div style="display:flex;align-items:center;gap:8px">
+                <div style="display:flex;align-items:center;gap:10px">
                   <span class="tool-name">{{ t.name }}</span>
                   <span class="tool-tag" v-for="tag in t.tags" :key="tag">{{ tag }}</span>
                 </div>
@@ -325,22 +167,29 @@ select.config-input option { background: var(--bg); color: var(--text); }
             </template>
 
             <!-- 执行日志 -->
-            <div style="font-size:11px;color:var(--text2);margin:12px 0 8px;font-weight:600">⚡ 执行记录</div>
+            <div style="font-size:13px;color:var(--text);margin:20px 0 12px;font-weight:600;display:flex;align-items:center;gap:6px">
+              <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+              执行记录
+            </div>
             <template v-if="toolExecLog.length === 0">
-              <div style="color:var(--text3);font-size:11px;padding:8px 0">暂无执行记录（AI 调用工具时自动显示）</div>
+              <div style="color:var(--text3);font-size:12px;padding:12px 0;text-align:center">暂无执行记录（AI 调用工具时自动显示）</div>
             </template>
             <template v-for="(log, i) in [...toolExecLog].reverse()" :key="'l'+i">
-              <div class="tool-card" style="padding:8px 12px">
-                <div style="display:flex;align-items:center;gap:8px">
-                  <span style="font-size:10px;color:var(--text3)">{{ log.time }}</span>
-                  <span class="tool-name" style="font-size:11px">{{ log.tool }}</span>
-                  <span :style="{color: log.ok ? 'var(--green)' : 'var(--red)', fontSize:'10px'}">{{ log.ok ? '✓ 成功' : '✗ 失败' }}</span>
-                  <span style="font-size:10px;color:var(--text3)">{{ log.elapsed }}ms</span>
+              <div class="tool-card" style="padding:12px 16px">
+                <div style="display:flex;align-items:center;gap:10px">
+                  <span style="font-size:11px;color:var(--text3);font-family:ui-monospace,monospace">{{ log.time }}</span>
+                  <span class="tool-name" style="font-size:13px">{{ log.tool }}</span>
+                  <span :style="{color: log.ok ? 'var(--green)' : 'var(--red)', fontSize:'11px', fontWeight:'600'}">
+                    <svg v-if="log.ok" class="icon-sm" style="vertical-align:text-bottom" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                    <svg v-else class="icon-sm" style="vertical-align:text-bottom" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    {{ log.ok ? '成功' : '失败' }}
+                  </span>
+                  <span style="font-size:11px;color:var(--text3);margin-left:auto">{{ log.elapsed }}ms</span>
                 </div>
-                <div style="font-size:10.5px;color:var(--text2);margin-top:3px">
-                  输入: <code style="background:var(--bg);padding:1px 4px;border-radius:3px;color:var(--cyan)">{{ log.input }}</code>
+                <div style="font-size:12px;color:var(--text2);margin-top:8px">
+                  输入: <code style="background:var(--bg2);padding:2px 6px;border-radius:4px;color:var(--blue);font-family:ui-monospace,monospace;border:1px solid var(--border)">{{ log.input }}</code>
                 </div>
-                <div style="font-size:10.5px;margin-top:2px" :style="{color: log.ok ? 'var(--text)' : 'var(--red)'}">
+                <div style="font-size:12px;margin-top:6px;word-break:break-all" :style="{color: log.ok ? 'var(--text)' : 'var(--red)'}">
                   结果: {{ log.result }}
                 </div>
               </div>
@@ -348,39 +197,42 @@ select.config-input option { background: var(--bg); color: var(--text); }
           </div>
         </template>
 
-        <!-- Raw messages tab -->
+        <!-- 通讯日志 tab -->
         <template v-if="rightTab==='raw'">
           <div class="filter-bar">
             <span class="filter-chip" :class="{active: rawFilter==='all'}" @click="rawFilter='all'">全部</span>
             <span class="filter-chip" :class="{active: rawFilter==='in'}" @click="rawFilter='in'">← 收到</span>
             <span class="filter-chip" :class="{active: rawFilter==='out'}" @click="rawFilter='out'">→ 发出</span>
-            <button class="btn" @click="rawMessages=[]" style="padding:2px 8px;font-size:10px;margin-left:auto">清空</button>
+            <button class="btn" @click="rawMessages=[]" style="padding:4px 10px;font-size:11px;margin-left:auto">清空</button>
           </div>
           <div class="stream-body" ref="rawBody">
             <template v-if="filteredRaw.length === 0">
-              <div class="empty"><div class="empty-icon">📡</div>等待消息...</div>
+              <div class="empty">
+                <div class="empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg></div>
+                等待消息...
+              </div>
             </template>
             <template v-for="(m, i) in filteredRaw" :key="i">
               <div class="raw-card" :class="{new: m._new}" @click="m._expanded = !m._expanded">
                 <div class="raw-card-header">
                   <span class="event-time">{{ m.time }}</span>
-                  <span class="raw-dir" :class="m.dir">{{ m.dir === 'in' ? '←' : '→' }}</span>
-                  <span class="raw-label" :style="{color: m.dir==='in' ? 'var(--green)' : 'var(--orange)'}">{{ m.label }}</span>
-                  <!-- 合并计数徽章 -->
+                  <span class="raw-dir" :class="m.dir">
+                    <svg v-if="m.dir === 'in'" class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+                    <svg v-else class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+                  </span>
+                  <span class="raw-label" :style="{color: m.dir==='in' ? 'var(--blue)' : 'var(--orange)'}">{{ m.label }}</span>
                   <span v-if="m._merged && m.count > 1" class="raw-merge-badge">× {{ m.count }}</span>
                   <span class="raw-brief" v-if="!m._merged" v-html="m.brief"></span>
                   <span class="raw-brief" v-else>已接收 {{ m.count }} 条流式增量</span>
                   <span class="raw-expand">{{ m._expanded ? '▼' : '▶' }}</span>
                 </div>
-                <!-- 普通展开 -->
                 <div class="raw-detail" v-if="m._expanded && !m._merged">
                   <pre>{{ m.data }}</pre>
                 </div>
-                <!-- 合并展开：列出每条 delta -->
                 <div class="raw-detail" v-if="m._expanded && m._merged" style="max-height:400px">
-                  <div v-for="(child, ci) in m.children" :key="ci" style="border-bottom:1px solid var(--border);padding:4px 0;margin-bottom:4px">
-                    <div style="font-size:10px;color:var(--text3)">{{ child.time }} #{{ ci + 1 }}</div>
-                    <pre style="font-size:10.5px">{{ child.data }}</pre>
+                  <div v-for="(child, ci) in m.children" :key="ci" style="border-bottom:1px dashed var(--border);padding:6px 0;margin-bottom:6px">
+                    <div style="font-size:11px;color:var(--text3);margin-bottom:4px">{{ child.time }} #{{ ci + 1 }}</div>
+                    <pre>{{ child.data }}</pre>
                   </div>
                 </div>
               </div>
@@ -388,31 +240,69 @@ select.config-input option { background: var(--bg); color: var(--text); }
           </div>
         </template>
 
-        <!-- 上下文 tab -->
+        <!-- 全部历史对话 tab -->
+        <template v-if="rightTab==='messages'">
+          <div class="stream-header">
+            <h3>全部历史对话 {{ fullMessages.length }} / {{ fullMessagesTotal || 0 }}</h3>
+            <div style="display:flex;gap:8px">
+              <button class="btn" @click="loadFullMessages(true)" :disabled="!connected" style="padding:4px 10px;font-size:11px">刷新</button>
+              <button class="btn" @click="fullMessages=[];fullMessagesPage=0;fullMessagesTotal=0" style="padding:4px 10px;font-size:11px">清空</button>
+            </div>
+          </div>
+          <div class="stream-body" ref="fullMessagesBody" @scroll="onFullMessagesScroll">
+            <template v-if="fullMessages.length === 0">
+              <div class="empty">
+                <div class="empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg></div>
+                暂无消息，点击刷新加载全部历史对话
+              </div>
+            </template>
+            <template v-for="m in fullMessages" :key="m.message_id">
+              <div class="raw-card" :class="{new: m._new}" @click="m._expanded = !m._expanded">
+                <div class="raw-card-header">
+                  <span class="event-time">{{ formatMessageTime(m.created_at) }}</span>
+                  <span class="raw-label" :style="{color: roleColor(m.role)}">{{ roleLabel(m.role) }}</span>
+                  <span class="raw-brief">
+                    <span class="raw-tag">{{ m.kind }}</span>
+                    <span class="raw-tag">{{ (m.message_id || '').slice(0,12) }}</span>
+                    {{ (m.text || '').slice(0, 90) }}
+                  </span>
+                  <span class="raw-expand">{{ m._expanded ? '▼' : '▶' }}</span>
+                </div>
+                <div class="raw-detail" v-if="m._expanded">
+                  <pre>{{ JSON.stringify(m, null, 2) }}</pre>
+                </div>
+              </div>
+            </template>
+            <div style="padding:16px;text-align:center;color:var(--text3);font-size:12px" v-if="fullMessagesLoading">加载中...</div>
+            <div style="padding:16px;text-align:center;color:var(--text3);font-size:12px" v-else-if="fullMessages.length && !fullMessagesHasMore">已经到底了</div>
+          </div>
+        </template>
+
+        <!-- 上下文管理 tab -->
         <template v-if="rightTab==='context'">
           <div class="config-body">
             <div class="config-section">
-              <div class="config-title">当前激活上下文 <span style="font-size:10px;color:var(--text3);font-weight:400">模型本轮实际可见的消息范围，不等于全量历史</span></div>
+              <div class="config-title">当前激活上下文 <span>模型本轮实际可见的消息范围</span></div>
               <div class="config-actions">
-                <button class="btn btn-connect" @click="loadContextPreview" :disabled="!connected">刷新上下文预览</button>
-                <button class="btn" @click="resetContext" :disabled="!connected">重置为全量上下文</button>
-                <button class="btn" @click="keepRecentContext" :disabled="!connected">只保留最近 N 条</button>
+                <button class="btn btn-connect" @click="loadContextPreview" :disabled="!connected">刷新预览</button>
+                <button class="btn" @click="resetContext" :disabled="!connected">重置全量</button>
+                <button class="btn" @click="keepRecentContext" :disabled="!connected">仅保留最近N条</button>
               </div>
-              <div class="config-row-group" style="margin-top:8px">
-                <div class="config-row" style="flex:1">
+              <div class="config-row-group" style="margin-top:16px">
+                <div class="config-row">
                   <label>最近保留消息数</label>
                   <input class="config-input" v-model.number="contextKeepRecent" type="number" placeholder="20">
                 </div>
-                <div class="config-row" style="flex:1">
-                  <label>从某条消息之后开始</label>
+                <div class="config-row">
+                  <label>从某条消息后开始</label>
                   <input class="config-input" v-model="contextIncludeAfter" placeholder="msg_xxx">
                 </div>
               </div>
-              <div class="config-actions">
-                <button class="btn" @click="includeAfterContext" :disabled="!connected || !contextIncludeAfter.trim()">应用“从此之后”</button>
+              <div class="config-actions" style="margin-top:8px">
+                <button class="btn" @click="includeAfterContext" :disabled="!connected || !contextIncludeAfter.trim()">应用起点</button>
               </div>
-              <div class="stats-panel" style="margin-top:10px" v-if="contextPreview.active_context">
-                <div class="stat-row"><span class="stat-label">上下文 ID</span><span class="stat-value">{{ contextPreview.active_context.context_id }}</span></div>
+              <div class="stats-panel" style="margin-top:16px" v-if="contextPreview.active_context">
+                <div class="stat-row"><span class="stat-label">上下文 ID</span><span class="stat-value" style="font-size:11px">{{ contextPreview.active_context.context_id }}</span></div>
                 <div class="stat-row"><span class="stat-label">上下文模式</span><span class="stat-value">{{ contextModeLabel(contextPreview.active_context.mode) }}</span></div>
                 <div class="stat-row"><span class="stat-label">全部消息</span><span class="stat-value">{{ contextPreview.counts?.all_messages || 0 }}</span></div>
                 <div class="stat-row"><span class="stat-label">当前可见消息</span><span class="stat-value">{{ contextPreview.counts?.active_messages || 0 }}</span></div>
@@ -434,31 +324,37 @@ select.config-input option { background: var(--bg); color: var(--text); }
                   <option value="agent_state">Agent 状态</option>
                 </select>
               </div>
-              <textarea class="config-input" v-model="contextSeedContent" style="min-height:90px;resize:vertical" placeholder="这段内容会作为 Context Seed 注入模型输入..."></textarea>
+              <div class="config-row">
+                <label>内容</label>
+                <textarea class="config-input" v-model="contextSeedContent" style="min-height:90px;resize:vertical" placeholder="这段内容会作为 Context Seed 注入模型输入..."></textarea>
+              </div>
               <div class="config-actions">
                 <button class="btn btn-connect" @click="addContextSeed" :disabled="!connected || !contextSeedContent.trim()">注入 Seed</button>
               </div>
             </div>
 
             <div class="config-section">
-              <div class="config-title">Compact Apply</div>
-              <textarea class="config-input" v-model="contextSummary" style="min-height:110px;resize:vertical" placeholder="压缩摘要 summary..."></textarea>
+              <div class="config-title">应用压缩摘要</div>
+              <div class="config-row">
+                <label>摘要内容</label>
+                <textarea class="config-input" v-model="contextSummary" style="min-height:110px;resize:vertical" placeholder="把压缩后的上下文摘要写在这里，应用后会作为压缩摘要注入模型输入..."></textarea>
+              </div>
               <div class="config-actions">
                 <button class="btn btn-connect" @click="applyCompaction" :disabled="!connected || !contextSummary.trim()">应用压缩摘要</button>
               </div>
             </div>
 
             <div class="config-section">
-              <div class="config-title">Active Messages</div>
+              <div class="config-title">当前可见消息</div>
               <template v-if="!contextPreview.messages || contextPreview.messages.length===0">
-                <div style="color:var(--text3);font-size:11px;padding:8px 0">暂无 active context 预览</div>
+                <div style="color:var(--text3);font-size:12px;padding:12px 0;text-align:center">暂无当前上下文预览</div>
               </template>
               <template v-for="m in contextPreview.messages || []" :key="m.message_id">
                 <div class="raw-card" style="cursor:default">
                   <div class="raw-card-header">
-                    <span class="raw-label">{{ m.role }}</span>
-                    <span class="raw-brief"><span class="raw-tag">{{ m.message_id }}</span> {{ contextMessageText(m).slice(0,90) }}</span>
-                    <button class="btn" @click.stop="excludeSingleMessage(m.message_id)" :disabled="!connected" style="padding:2px 8px;font-size:10px">排除</button>
+                    <span class="raw-label" :style="{color: roleColor(m.role)}">{{ m.role }}</span>
+                    <span class="raw-brief"><span class="raw-tag">{{ (m.message_id||'').slice(0,8) }}</span> {{ contextMessageText(m).slice(0,90) }}</span>
+                    <button class="btn" @click.stop="excludeSingleMessage(m.message_id)" :disabled="!connected" style="padding:4px 10px;font-size:11px;margin-left:auto">排除</button>
                   </div>
                 </div>
               </template>
@@ -466,26 +362,14 @@ select.config-input option { background: var(--bg); color: var(--text); }
           </div>
         </template>
 
-        <!-- Stats tab -->
-        <template v-if="rightTab==='stats'">
-          <div class="stats-panel">
-            <div class="stat-row"><span class="stat-label">连接状态</span><span class="stat-value">{{ connected ? '已连接' : '未连接' }}</span></div>
-            <div class="stat-row"><span class="stat-label">Connection ID</span><span class="stat-value">{{ connectionId || '—' }}</span></div>
-            <div class="stat-row"><span class="stat-label">Session ID</span><span class="stat-value">{{ sessionId }}</span></div>
-            <div class="stat-row"><span class="stat-label">收到事件数</span><span class="stat-value">{{ events.length }}</span></div>
-            <div class="stat-row"><span class="stat-label">原始消息数</span><span class="stat-value">{{ rawMessages.length }}</span></div>
-            <div class="stat-row"><span class="stat-label">已注册工具</span><span class="stat-value">{{ tools.length }}</span></div>
-            <div class="stat-row"><span class="stat-label">对话消息数</span><span class="stat-value">{{ chatMessages.length }}</span></div>
-            <div class="stat-row"><span class="stat-label">WS URL</span><span class="stat-value">{{ wsUrl }}</span></div>
-          </div>
-        </template>
-
-        <!-- Prompt tab -->
+        <!-- 系统提示词 tab -->
         <template v-if="rightTab==='prompt'">
           <div class="config-body">
             <div class="config-section">
-              <div class="config-title">系统提示词 <span style="font-size:10px;color:var(--text3);font-weight:400">（Session 级覆盖）</span></div>
-              <textarea class="config-input" v-model="systemPrompt" style="min-height:260px;resize:vertical;line-height:1.5" placeholder="输入当前 session 的 system prompt..."></textarea>
+              <div class="config-title">系统提示词 <span>（Session 级覆盖）</span></div>
+              <div class="config-row">
+                <textarea class="config-input" v-model="systemPrompt" style="min-height:260px;resize:vertical" placeholder="输入当前 session 的 system prompt..."></textarea>
+              </div>
               <div class="config-actions">
                 <button class="btn btn-connect" @click="saveSystemPrompt" :disabled="!connected">保存到 Session</button>
                 <button class="btn" @click="loadSystemPrompt" :disabled="!connected">读取当前</button>
@@ -496,11 +380,11 @@ select.config-input option { background: var(--bg); color: var(--text); }
           </div>
         </template>
 
-        <!-- Config tab -->
+        <!-- 供应商 tab -->
         <template v-if="rightTab==='config'">
           <div class="config-body">
             <div class="config-section">
-              <div class="config-title">供应商配置 <span style="font-size:10px;color:var(--text3);font-weight:400">（Session 级覆盖）</span></div>
+              <div class="config-title">供应商配置 <span>（Session 级覆盖）</span></div>
 
               <div class="config-row">
                 <label>协议</label>
@@ -512,28 +396,31 @@ select.config-input option { background: var(--bg); color: var(--text); }
 
               <div class="config-row">
                 <label>Base URL</label>
-                <input class="config-input" v-model="providerConfig.base_url"
-                       placeholder="https://api.deepseek.com">
+                <input class="config-input" v-model="providerConfig.base_url" placeholder="https://api.deepseek.com">
               </div>
 
               <div class="config-row">
                 <label>API Key</label>
-                <input class="config-input" v-model="providerConfig.api_key" type="password"
-                       placeholder="sk-...">
+                <div class="config-input-wrapper">
+                  <input class="config-input" v-model="providerConfig.api_key" :type="showApiKey ? 'text' : 'password'" placeholder="sk-...">
+                  <div class="config-input-icon" @click="showApiKey = !showApiKey" title="显示/隐藏">
+                    <svg v-if="!showApiKey" class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                    <svg v-else class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+                  </div>
+                </div>
               </div>
 
               <div class="config-row">
                 <label>模型</label>
-                <input class="config-input" v-model="providerConfig.model"
-                       placeholder="deepseek-chat">
+                <input class="config-input" v-model="providerConfig.model" placeholder="deepseek-chat">
               </div>
 
               <div class="config-row-group">
-                <div class="config-row" style="flex:1">
+                <div class="config-row">
                   <label>Max Tokens</label>
                   <input class="config-input" v-model.number="providerConfig.max_tokens" type="number" placeholder="4096">
                 </div>
-                <div class="config-row" style="flex:1">
+                <div class="config-row">
                   <label>Temperature</label>
                   <input class="config-input" v-model.number="providerConfig.temperature" type="number" step="0.1" placeholder="0">
                 </div>
@@ -547,7 +434,7 @@ select.config-input option { background: var(--bg); color: var(--text); }
               <div class="config-hint" v-if="providerStatus">{{ providerStatus }}</div>
             </div>
 
-            <div class="config-section" style="margin-top:16px">
+            <div class="config-section">
               <div class="config-title">快速模板</div>
               <div class="config-templates">
                 <button class="btn" @click="applyTemplate('deepseek')">DeepSeek</button>
@@ -559,1028 +446,158 @@ select.config-input option { background: var(--bg); color: var(--text); }
           </div>
         </template>
 
-        <!-- Raw command input (always visible at bottom of right panel) -->
+        <!-- Raw command input (always visible at bottom of right panel when raw tab active) -->
         <div class="raw-input" v-if="rightTab==='raw'">
-          <input v-model="rawInput" placeholder='发送原始命令 JSON: {"command":"session.get","request_id":"r1","session_id":"s1","payload":{}}'
+          <input v-model="rawInput" placeholder='发送命令 JSON: {"command":"session.get","request_id":"r1","session_id":"s1","payload":{}}'
                  @keyup.enter="sendRaw" :disabled="!connected">
-          <button class="btn" @click="sendRaw" :disabled="!connected" style="padding:4px 12px;font-size:10px">发送</button>
+          <button class="btn" @click="sendRaw" :disabled="!connected" style="padding:8px 16px;">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+          </button>
+        </div>
+      </div>
+      <!-- Left: Chat Centered -->
+      <div class="left">
+        <!-- Session Sidebar -->
+        <div class="session-sidebar">
+          <div class="session-sidebar-header">
+            <h3>会话列表</h3>
+            <button class="btn" @click="createNewSession" :disabled="!connected" style="padding: 4px 8px;" title="新会话">
+              <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            </button>
+          </div>
+          <div class="session-list">
+            <div class="session-item" v-for="s in sessions" :key="s.session_id" :class="{active: s.session_id === sessionId}" @click="selectSession(s.session_id)">
+              <div class="session-item-title">{{ s.title || s.session_id }}</div>
+              <div class="session-item-meta">
+                <span style="font-family:ui-monospace,monospace">{{ (s.session_id).slice(0,8) }}</span>
+                <span>{{ s.message_count || 0 }} 条</span>
+              </div>
+            </div>
+            <div v-if="sessions.length === 0" style="padding: 20px; text-align: center; color: var(--text3); font-size: 12px;">暂无会话</div>
+          </div>
+        </div>
+
+        <div class="chat-container">
+          <div class="chat-header">
+            <h3>
+              <svg class="icon" style="margin-right:6px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+              CHAT — 对话调试
+            </h3>
+            <div class="chat-controls">
+              <span class="raw-tag">{{ runStatusLabel(currentRunStatus) }}</span>
+              <span class="raw-tag" v-if="currentRunId" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ currentRunId }}</span>
+              <input v-model="sessionId" placeholder="session_id" style="width:160px;" title="当前 Session ID，可直接修改">
+              <button class="btn" @click="loadSessions" :disabled="!connected" style="padding:6px 10px;font-size:12px" title="刷新会话">
+                <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+              </button>
+              <button class="btn" @click="chatMessages=[]" style="padding:6px 10px;font-size:12px" title="清空当前消息">
+                <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+              </button>
+            </div>
+          </div>
+          
+          <div class="chat-body" ref="chatBody">
+            <template v-if="chatMessages.length === 0">
+              <div class="empty">
+                <div class="empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg></div>
+                发送消息开始对话调试
+              </div>
+            </template>
+            <template v-for="(m, i) in chatMessages" :key="i">
+              <div class="msg-wrapper" :class="m.role">
+                <div class="msg" :class="'msg-' + m.role">
+                  <div v-if="m.role === 'assistant'" class="markdown-body" v-html="renderMarkdown(m.text)"></div>
+                  <div v-else style="white-space:pre-wrap">{{ m.text }}</div>
+                </div>
+                <div class="msg-meta" v-if="m.meta">{{ m.meta }}</div>
+              </div>
+            </template>
+            <!-- 流式消息（实时渲染） -->
+            <template v-if="isStreaming">
+              <div class="msg-wrapper assistant">
+                <div class="msg msg-assistant">
+                  <div class="markdown-body" v-html="renderMarkdown(streamingText)"></div>
+                  <span class="cursor-blink"></span>
+                </div>
+                <div class="msg-meta">生成中...</div>
+              </div>
+            </template>
+          </div>
+          
+          <div class="chat-input-wrapper">
+            <div class="chat-input">
+              <input v-model="chatInput" placeholder="输入消息... (Enter 发送)" @keyup.enter="sendChat" :disabled="!connected">
+              <button class="btn" @click="cancelCurrentRun" :disabled="!connected || !currentRunId || !['pending','running','streaming','cancelling'].includes(currentRunStatus)" title="停止当前生成">
+                停止
+              </button>
+              <button class="btn btn-send" @click="sendChat" :disabled="!connected || !chatInput.trim()">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      
+
+    <!-- Preset Tools Modal -->
+    <div class="modal-overlay" v-if="showPresetToolsModal" @click="showPresetToolsModal = false">
+      <div class="modal-content" @click.stop>
+        <div class="modal-header">
+          <div style="display:flex;align-items:center;gap:8px">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>
+            预置工具（手动注册）
+          </div>
+          <div style="display:flex;align-items:center;gap:12px">
+            <button class="btn btn-connect" @click="registerPresetTools" :disabled="!connected" style="padding:4px 12px;font-size:12px">一键注册全部</button>
+            <div class="modal-close" @click="showPresetToolsModal = false">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </div>
+          </div>
+        </div>
+        <div class="modal-body">
+          <template v-for="t in presetTools" :key="'p'+t.name">
+            <div class="tool-card">
+              <div style="display:flex;align-items:center;gap:10px">
+                <span class="tool-name">{{ t.name }}</span>
+                <span class="tool-tag" v-for="tag in t.tags" :key="tag">{{ tag }}</span>
+                <button class="btn" @click="registerPresetTool(t)" :disabled="!connected" style="margin-left:auto;padding:4px 12px;font-size:11px">注册</button>
+              </div>
+              <div class="tool-desc">{{ t.description }}</div>
+            </div>
+          </template>
         </div>
       </div>
     </div>
+
+    <!-- Floating Stats Panel -->
+    <div class="floating-stats">
+      <div class="stats-panel-float" :class="{show: statsExpanded}">
+        <div class="stats-panel">
+          <div style="font-size: 14px; font-weight: 600; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10"></path><path d="M18 20V4"></path><path d="M6 20v-4"></path></svg>
+            状态摘要
+          </div>
+          <div class="stat-row"><span class="stat-label">连接状态</span><span class="stat-value" :style="{color: connected ? 'var(--green)' : 'var(--red)'}">{{ connected ? '已连接' : '未连接' }}</span></div>
+          <div class="stat-row"><span class="stat-label">Connection ID</span><span class="stat-value" style="font-size:11px;font-family:ui-monospace,monospace">{{ connectionId || '—' }}</span></div>
+          <div class="stat-row"><span class="stat-label">Session ID</span><span class="stat-value" style="font-size:11px;font-family:ui-monospace,monospace">{{ sessionId }}</span></div>
+          <div class="stat-row"><span class="stat-label">当前 Run</span><span class="stat-value" style="font-size:11px;font-family:ui-monospace,monospace">{{ currentRunId || '—' }}</span></div>
+          <div class="stat-row"><span class="stat-label">Run 状态</span><span class="stat-value">{{ runStatusLabel(currentRunStatus) }}</span></div>
+          <div class="stat-row"><span class="stat-label">收到事件数</span><span class="stat-value">{{ events.length }}</span></div>
+          <div class="stat-row"><span class="stat-label">原始消息数</span><span class="stat-value">{{ rawMessages.length }}</span></div>
+          <div class="stat-row"><span class="stat-label">已注册工具</span><span class="stat-value">{{ tools.length }}</span></div>
+          <div class="stat-row"><span class="stat-label">对话消息数</span><span class="stat-value">{{ chatMessages.length }}</span></div>
+          <div class="stat-row"><span class="stat-label">WS URL</span><span class="stat-value" style="font-size:11px">{{ wsUrl }}</span></div>
+        </div>
+      </div>
+      <div class="stats-btn" :class="{active: statsExpanded}" @click="statsExpanded = !statsExpanded">
+        <svg v-if="!statsExpanded" class="icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10"></path><path d="M18 20V4"></path><path d="M6 20v-4"></path></svg>
+        <svg v-else class="icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+      </div>
+    </div>
+    </div>
   </div>
 </div>
-
-<script>
-const { createApp, ref, computed, nextTick, onMounted } = Vue;
-
-createApp({
-  setup() {
-    const wsUrl = ref('ws://localhost:9991/ws');
-    const connected = ref(false);
-    const connectionId = ref('');
-    const sessionId = ref('debug_session');
-    const chatInput = ref('');
-    const chatMessages = ref([]);
-    const sessions = ref([]);
-    const selectedSessionId = ref('');
-    const events = ref([]);
-    const rawMessages = ref([]);
-    const tools = ref([]);
-    const rightTab = ref('events');
-    const eventFilter = ref('all');
-    const rawFilter = ref('all');
-    const rawInput = ref('');
-
-    const chatBody = ref(null);
-    const streamBody = ref(null);
-    const rawBody = ref(null);
-
-    const providerConfig = ref({
-      protocol: 'openai',
-      base_url: 'https://api.deepseek.com',
-      api_key: '',
-      model: 'deepseek-chat',
-      max_tokens: 4096,
-      temperature: 0,
-    });
-    const providerStatus = ref('');
-    const systemPrompt = ref('');
-    const systemPromptStatus = ref('');
-    const contextPreview = ref({});
-    const contextStatus = ref('');
-    const contextKeepRecent = ref(20);
-    const contextIncludeAfter = ref('');
-    const contextSeedKind = ref('system_memory');
-    const contextSeedContent = ref('');
-    const contextSummary = ref('');
-
-    // 流式文本累积
-    const streamingText = ref('');
-    const isStreaming = ref(false);
-
-    // 自动重连
-    const autoReconnect = ref(true);
-    const reconnectTimer = ref(null);
-
-    let ws = null;
-    let reqCounter = 0;
-    // 记录发出的命令类型（request_id → command 名），用于响应中文标签
-    const pendingCommands = new Map();
-
-    // ─── 预置工具定义 ──────────────────────────────────────
-    const presetTools = [
-      {
-        name: 'get_time',
-        description: '获取当前时间（北京时间 UTC+8）',
-        schema: { type: 'object', properties: { format: { type: 'string', description: '输出格式: iso / locale / timestamp', default: 'locale' } } },
-        tags: ['builtin', 'time'],
-        execute(input) {
-          const fmt = input.format || 'locale';
-          const now = new Date();
-          if (fmt === 'timestamp') return { ok: true, result: String(Date.now()) };
-          if (fmt === 'iso') return { ok: true, result: now.toISOString() };
-          return { ok: true, result: now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) };
-        }
-      },
-      {
-        name: 'echo',
-        description: '回显输入内容（调试用）',
-        schema: { type: 'object', properties: { text: { type: 'string', description: '要回显的文本' } }, required: ['text'] },
-        tags: ['builtin', 'debug'],
-        execute(input) { return { ok: true, result: input.text || '' }; }
-      },
-      {
-        name: 'calc',
-        description: '简单数学计算（支持 + - * / % **）',
-        schema: { type: 'object', properties: { expression: { type: 'string', description: '数学表达式，如 "2 + 3 * 4"' } }, required: ['expression'] },
-        tags: ['builtin', 'math'],
-        execute(input) {
-          const expr = (input.expression || '').replace(/[^0-9+\-*/.%()\s]/g, '');
-          if (!expr) return { ok: false, result: '无效表达式' };
-          try {
-            const val = Function('"use strict"; return (' + expr + ')')();
-            return { ok: true, result: String(val) };
-          } catch(e) { return { ok: false, result: '计算错误: ' + e.message }; }
-        }
-      },
-      {
-        name: 'random_number',
-        description: '生成随机整数',
-        schema: { type: 'object', properties: { min: { type: 'integer', default: 1 }, max: { type: 'integer', default: 100 } } },
-        tags: ['builtin', 'random'],
-        execute(input) {
-          const min = Math.ceil(input.min ?? 1);
-          const max = Math.floor(input.max ?? 100);
-          const val = Math.floor(Math.random() * (max - min + 1)) + min;
-          return { ok: true, result: String(val) };
-        }
-      },
-      {
-        name: 'generate_uuid',
-        description: '生成 UUID v4',
-        schema: { type: 'object', properties: {} },
-        tags: ['builtin', 'util'],
-        execute() {
-          const uuid = ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
-            (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16));
-          return { ok: true, result: uuid };
-        }
-      },
-      {
-        name: 'json_format',
-        description: '格式化 JSON 字符串',
-        schema: { type: 'object', properties: { json: { type: 'string', description: 'JSON 字符串' }, indent: { type: 'integer', default: 2 } }, required: ['json'] },
-        tags: ['builtin', 'util'],
-        execute(input) {
-          try {
-            const obj = JSON.parse(input.json);
-            return { ok: true, result: JSON.stringify(obj, null, input.indent ?? 2) };
-          } catch(e) { return { ok: false, result: 'JSON 解析错误: ' + e.message }; }
-        }
-      },
-      {
-        name: 'word_count',
-        description: '统计文本字数/词数/行数',
-        schema: { type: 'object', properties: { text: { type: 'string', description: '要统计的文本' } }, required: ['text'] },
-        tags: ['builtin', 'text'],
-        execute(input) {
-          const text = input.text || '';
-          const chars = text.length;
-          const words = text.trim() ? text.trim().split(/\s+/).length : 0;
-          const lines = text.split('\n').length;
-          return { ok: true, result: `字符: ${chars}, 词: ${words}, 行: ${lines}` };
-        }
-      },
-      {
-        name: 'base64',
-        description: 'Base64 编码/解码',
-        schema: { type: 'object', properties: { text: { type: 'string' }, action: { type: 'string', enum: ['encode', 'decode'], default: 'encode' } }, required: ['text'] },
-        tags: ['builtin', 'encoding'],
-        execute(input) {
-          try {
-            if (input.action === 'decode') return { ok: true, result: atob(input.text) };
-            return { ok: true, result: btoa(input.text) };
-          } catch(e) { return { ok: false, result: e.message }; }
-        }
-      },
-    ];
-
-    // 工具注册表（name → tool 定义）
-    const toolRegistry = new Map();
-    presetTools.forEach(t => toolRegistry.set(t.name, t));
-
-    /**
-     * 注册本地工具处理器。
-     * 业务端扩展时只需要关注 execute(input, ctx)，其他 call_id / WS 回包 / 日志由统一入口处理。
-     */
-    function defineClientTool(definition) {
-      if (!definition || !definition.name || typeof definition.execute !== 'function') {
-        throw new Error('defineClientTool requires { name, execute }');
-      }
-      const tool = {
-        description: '',
-        schema: { type: 'object', properties: {} },
-        tags: [],
-        ...definition,
-      };
-      toolRegistry.set(tool.name, tool);
-      return tool;
-    }
-
-    function normalizeToolExecutionResult(value) {
-      if (value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'ok')) {
-        return {
-          ok: value.ok !== false,
-          result: value.result == null ? '' : String(value.result),
-        };
-      }
-      return { ok: true, result: value == null ? '' : String(value) };
-    }
-
-    // 工具执行日志
-    const toolExecLog = ref([]);
-
-    function registerPresetTool(t) {
-      if (!ws || !t) return;
-      const rid = nextReqId();
-      const msg = {
-        command: 'tool.register',
-        request_id: rid,
-        session_id: sessionId.value,
-        payload: {
-          tool_name: t.name,
-          description: t.description,
-          schema: t.schema,
-          client_id: 'web_debug',
-          timeout_ms: 15000,
-          tags: t.tags,
-        }
-      };
-      const out = JSON.stringify(msg);
-      ws.send(out);
-      addRawMessage('out', out);
-      addLocalNotice('工具注册', `已发送注册请求: ${t.name}`);
-    }
-
-    function registerPresetTools() {
-      if (!ws) return;
-      presetTools.forEach(t => registerPresetTool(t));
-    }
-
-    function nextReqId() { return 'r' + (++reqCounter); }
-    function now() { return new Date().toLocaleTimeString('zh-CN', { hour12: false }); }
-
-    function connect() {
-      if (ws) ws.close();
-      if (reconnectTimer.value) { clearTimeout(reconnectTimer.value); reconnectTimer.value = null; }
-      try { ws = new WebSocket(wsUrl.value); } catch(e) { addLocalNotice('连接失败', e.message); scheduleReconnect(); return; }
-
-      ws.onopen = () => {
-        connected.value = true;
-        addLocalNotice('WS', '连接建立');
-        // 连接后只查询当前 session 状态，不自动注册工具
-        loadSessions();
-        loadSessionHistory();
-        loadProvider();
-        loadSystemPrompt();
-        loadTools();
-        loadContextPreview();
-      };
-      ws.onclose = () => {
-        connected.value = false;
-        connectionId.value = '';
-        addLocalNotice('WS', '连接断开');
-        if (autoReconnect.value) scheduleReconnect();
-      };
-      ws.onerror = (e) => {
-        addLocalNotice('WS', '连接错误');
-      };
-      ws.onmessage = (evt) => {
-        const raw = evt.data;
-        addRawMessage('in', raw);
-
-        let msg;
-        try { msg = JSON.parse(raw); } catch { return; }
-
-        // Hello response
-        if (msg.type === 'response' && msg.request_id === 'hello') {
-          connectionId.value = msg.payload?.connection_id || '';
-          return;
-        }
-
-        // Event
-        if (msg.type === 'event') {
-          const e = msg;
-          const type = e.event_type || 'unknown';
-          const payload = e.payload || {};
-          addEvent(type, e.session_id, payload, e.run_id, e);
-          handleEvent(type, payload);
-          return;
-        }
-
-        // Response
-        if (msg.type === 'response') {
-          // 先刷入正在流式显示的文本（防止 model.completed 还没到时 response 先到导致丢失）
-          flushStreaming();
-
-          if (!msg.success) {
-            addLocalNotice('命令失败', `[${msg.request_id}] ${msg.payload?.error || '未知错误'}`);
-          }
-
-          // session.send 的响应不再 push 到聊天（assistant 消息已通过 model.completed 显示）
-          // 其他 command 的响应照常显示为 system 消息
-
-          // provider.get 响应 → 回填配置表单
-          if (msg.success && msg.request_id.startsWith('r') && msg.payload?.provider) {
-            const p = msg.payload.provider;
-            providerConfig.value.protocol = p.protocol || 'openai';
-            providerConfig.value.base_url = p.base_url || '';
-            providerConfig.value.api_key = p.api_key || '';
-            providerConfig.value.model = p.model || '';
-            providerConfig.value.max_tokens = p.max_tokens || 4096;
-            providerConfig.value.temperature = p.temperature || 0;
-            providerStatus.value = `已读取 (${msg.payload.is_override ? 'Session 覆盖' : '全局默认'})`;
-            setTimeout(() => providerStatus.value = '', 4000);
-          }
-          // provider.update 响应
-          if (msg.success && msg.payload?.provider && msg.request_id.startsWith('r')) {
-            const p = msg.payload.provider;
-            providerStatus.value = `已保存: ${p.protocol} / ${p.model}`;
-            setTimeout(() => providerStatus.value = '', 4000);
-          }
-          // system_prompt.get / set 响应
-          if (msg.success && Object.prototype.hasOwnProperty.call(msg.payload || {}, 'system_prompt')) {
-            systemPrompt.value = msg.payload.system_prompt || '';
-            systemPromptStatus.value = msg.payload.updated
-              ? `已保存 (${msg.payload.is_session_override ? 'Session 覆盖' : '全局默认'})`
-              : `已读取 (${msg.payload.is_session_override ? 'Session 覆盖' : '全局默认'})`;
-            setTimeout(() => systemPromptStatus.value = '', 4000);
-          }
-
-          const respCmd = pendingCommands.get(msg.request_id) || '';
-          if (msg.success && msg.payload?.active_context) {
-            contextPreview.value = msg.payload;
-            contextStatus.value = `Context 已更新: ${msg.payload.active_context.mode}`;
-            setTimeout(() => contextStatus.value = '', 4000);
-          }
-          if (msg.success && msg.payload?.seed && respCmd === 'context.seed.add') {
-            contextSeedContent.value = '';
-            loadContextPreview();
-          }
-          if (msg.success && (respCmd === 'context.compaction.apply')) {
-            contextSummary.value = '';
-            loadContextPreview();
-          }
-
-          // tool.list 响应 → 回填工具列表
-          if (msg.success && Array.isArray(msg.payload?.tools)) {
-            tools.value = msg.payload.tools.map(t => ({
-              name: t.name,
-              description: t.description,
-              client: t.client_id || '—',
-              timeout: t.timeout_ms || 30000,
-              tags: t.tags || [],
-              input_schema: t.input_schema || {},
-            }));
-          }
-
-          // tool.register / unregister 响应后刷新 session 工具配置
-          if (msg.success && (respCmd === 'tool.register' || respCmd === 'tool.unregister')) {
-            loadTools();
-          }
-
-          // session.list 响应 → 回填 session 下拉
-          if (msg.success && Array.isArray(msg.payload?.sessions)) {
-            sessions.value = msg.payload.sessions;
-            selectedSessionId.value = sessionId.value;
-          }
-
-          // session.send 响应 → 如果 model.completed 还没来，用 response payload 兜底显示
-          if (msg.success && msg.payload?.content && typeof msg.payload.content === 'string') {
-            // 只有当最后一条不是 assistant 消息时才兜底推送（避免和 model.completed 或 flushStreaming 重复）
-            const lastMsg = chatMessages.value[chatMessages.value.length - 1];
-            if (!lastMsg || lastMsg.role !== 'assistant') {
-              chatMessages.value.push({ role: 'assistant', text: msg.payload.content, meta: now() });
-              scrollToChat();
-            }
-          }
-
-          // session.messages 响应 → 回填聊天历史
-          if (msg.success && msg.payload?.messages && Array.isArray(msg.payload.messages)) {
-            const msgs = msg.payload.messages;
-            if (msgs.length > 0) {
-              chatMessages.value = msgs.map(m => ({
-                role: m.role === 'assistant' ? 'assistant' : m.role === 'user' ? 'user' : 'system',
-                text: m.text || '',
-                meta: m.created_at ? new Date(m.created_at).toLocaleTimeString('zh-CN', {hour12:false}) : '',
-              })).filter(m => m.text);
-              scrollToChat();
-              addLocalNotice('会话', `已加载 ${chatMessages.value.length} 条历史消息`);
-            }
-          }
-          return;
-        }
-
-        // Stream 是 Core 主动推送的运行时流，也归入事件流；命令响应不进入事件流
-        if (msg.type === 'stream') {
-          addEvent('stream', msg.session_id, msg.data || {}, msg.run_id, msg);
-          return;
-        }
-      };
-    }
-
-    function disconnect() {
-      autoReconnect.value = false;
-      if (reconnectTimer.value) { clearTimeout(reconnectTimer.value); reconnectTimer.value = null; }
-      if (ws) ws.close();
-    }
-
-    function scheduleReconnect() {
-      if (reconnectTimer.value) return;
-      reconnectTimer.value = setTimeout(() => {
-        reconnectTimer.value = null;
-        if (!connected.value && autoReconnect.value) {
-          addLocalNotice('WS', '自动重连...');
-          connect();
-        }
-      }, 3000);
-    }
-
-    function loadSessionHistory() {
-      if (!ws || !sessionId.value) return;
-      // 1. 拉取消息历史
-      const rid = nextReqId();
-      const fullMsg = {
-        command: 'session.messages',
-        request_id: rid,
-        session_id: sessionId.value,
-        payload: { page: 0, limit: 50 }
-      };
-      const out = JSON.stringify(fullMsg);
-      ws.send(out);
-      addRawMessage('out', out);
-    }
-
-    function loadSessions() {
-      if (!ws) return;
-      const rid = nextReqId();
-      const msg = {
-        command: 'session.list',
-        request_id: rid,
-        session_id: '',
-        payload: { page: 0, limit: 100 },
-      };
-      const out = JSON.stringify(msg);
-      ws.send(out);
-      addRawMessage('out', out);
-    }
-
-    function selectSession(id) {
-      if (!id || id === sessionId.value) return;
-      sessionId.value = id;
-      chatMessages.value = [];
-      streamingText.value = '';
-      isStreaming.value = false;
-      events.value = [];
-      rawMessages.value = [];
-      toolExecLog.value = [];
-      loadSessionHistory();
-      loadProvider();
-      loadSystemPrompt();
-      loadTools();
-      loadContextPreview();
-      addLocalNotice('会话', `已切换并加载 session: ${id}`);
-    }
-
-    function sendCommand(command, payload = {}, sid = sessionId.value) {
-      if (!ws) return '';
-      const rid = nextReqId();
-      const msg = { command, request_id: rid, session_id: sid, payload };
-      const out = JSON.stringify(msg);
-      ws.send(out);
-      addRawMessage('out', out);
-      return rid;
-    }
-
-    function loadContextPreview() {
-      sendCommand('context.preview');
-    }
-
-    function resetContext() {
-      sendCommand('context.reset');
-    }
-
-    function keepRecentContext() {
-      const keep = Number(contextKeepRecent.value || 0);
-      sendCommand('context.keep_recent', { keep: keep > 0 ? keep : null });
-    }
-
-    function includeAfterContext() {
-      const message_id = contextIncludeAfter.value.trim();
-      if (!message_id) return;
-      sendCommand('context.include_after', { message_id });
-    }
-
-    function excludeSingleMessage(messageId) {
-      sendCommand('context.exclude', { start_message_id: messageId, end_message_id: messageId });
-    }
-
-    function addContextSeed() {
-      sendCommand('context.seed.add', {
-        kind: contextSeedKind.value,
-        content: contextSeedContent.value,
-        enabled: true,
-        priority: 0,
-      });
-    }
-
-    function applyCompaction() {
-      sendCommand('context.compaction.apply', {
-        summary: contextSummary.value,
-        include_after_message_id: contextIncludeAfter.value.trim() || null,
-      });
-    }
-
-    function contextMessageText(m) {
-      return (m.content || []).map(c => {
-        if (c.type === 'text') return c.text || '';
-        if (c.type === 'tool_use') return `[tool_use:${c.name}] ${JSON.stringify(c.input || {})}`;
-        if (c.type === 'tool_result') return `[tool_result:${c.tool_use_id}] ${c.content || ''}`;
-        return JSON.stringify(c);
-      }).join('\n');
-    }
-
-    function loadTools() {
-      if (!ws) return;
-      const rid = nextReqId();
-      const msg = {
-        command: 'tool.list',
-        request_id: rid,
-        session_id: sessionId.value,
-        payload: {},
-      };
-      const out = JSON.stringify(msg);
-      ws.send(out);
-      addRawMessage('out', out);
-    }
-
-    function loadSystemPrompt() {
-      if (!ws) return;
-      const rid = nextReqId();
-      const msg = {
-        command: 'system_prompt.get',
-        request_id: rid,
-        session_id: sessionId.value,
-        payload: {},
-      };
-      const out = JSON.stringify(msg);
-      ws.send(out);
-      addRawMessage('out', out);
-    }
-
-    function saveSystemPrompt() {
-      if (!ws) return;
-      const rid = nextReqId();
-      const msg = {
-        command: 'system_prompt.set',
-        request_id: rid,
-        session_id: sessionId.value,
-        payload: { system_prompt: systemPrompt.value || '' },
-      };
-      const out = JSON.stringify(msg);
-      ws.send(out);
-      addRawMessage('out', out);
-      systemPromptStatus.value = '已发送保存请求...';
-      setTimeout(() => systemPromptStatus.value = '', 3000);
-    }
-
-    function sendChat() {
-      if (!ws || !chatInput.value.trim()) return;
-      const text = chatInput.value.trim();
-      chatMessages.value.push({ role: 'user', text, meta: now() });
-      chatInput.value = '';
-      scrollToChat();
-
-      const rid = nextReqId();
-      const fullMsg = {
-        command: 'session.send',
-        request_id: rid,
-        session_id: sessionId.value,
-        payload: { message: text }
-      };
-      const out = JSON.stringify(fullMsg);
-      ws.send(out);
-      addRawMessage('out', out);
-    }
-
-    function sendRaw() {
-      if (!ws || !rawInput.value.trim()) return;
-      const text = rawInput.value.trim();
-      let parsed;
-      try { parsed = JSON.parse(text); } catch(e) { addLocalNotice('原始命令', 'JSON 解析失败: ' + e.message); return; }
-      if (!parsed.request_id) parsed.request_id = nextReqId();
-      const out = JSON.stringify(parsed);
-      ws.send(out);
-      addRawMessage('out', out);
-      rawInput.value = '';
-    }
-
-    function sendToolResult(call_id, result, is_error) {
-      if (!ws) return;
-      const msg = {
-        command: 'tool.execute.result',
-        request_id: nextReqId(),
-        session_id: sessionId.value,
-        payload: { call_id, result: String(result), is_error: !!is_error },
-      };
-      const out = JSON.stringify(msg);
-      ws.send(out);
-      addRawMessage('out', out);
-    }
-
-    function flushStreaming() {
-      // 将正在流式显示的内容刷入正式消息列表（避免 response 和 event 竞争丢失）
-      if (isStreaming.value && streamingText.value) {
-        chatMessages.value.push({ role: 'assistant', text: streamingText.value, meta: now() });
-        streamingText.value = '';
-        isStreaming.value = false;
-        scrollToChat();
-      }
-    }
-
-    async function handleToolCallRequest(payload) {
-      const { tool_name, call_id, input } = payload || {};
-      const safeInput = input || {};
-      const tool = toolRegistry.get(tool_name);
-      const startTime = Date.now();
-
-      // 先结束流式，避免工具执行日志插入时和模型增量混在一起
-      flushStreaming();
-
-      let execResult;
-      if (!tool) {
-        execResult = { ok: false, result: `tool '${tool_name}' not found in client registry` };
-      } else {
-        try {
-          const value = await tool.execute(safeInput, {
-            toolName: tool_name,
-            callId: call_id,
-            sessionId: sessionId.value,
-            connectionId: connectionId.value,
-          });
-          execResult = normalizeToolExecutionResult(value);
-        } catch(e) {
-          execResult = { ok: false, result: '执行异常: ' + e.message };
-        }
-      }
-
-      const elapsed = Date.now() - startTime;
-      chatMessages.value.push({
-        role: 'system',
-        text: tool
-          ? `🔧 ${tool_name}(${JSON.stringify(safeInput)})\n→ ${execResult.result} [${elapsed}ms]`
-          : `⚠️ 未知工具: ${tool_name}\n输入: ${JSON.stringify(safeInput)}`,
-        meta: `call_id: ${call_id}`
-      });
-
-      toolExecLog.value.push({
-        time: now(), tool: tool_name, input: JSON.stringify(safeInput),
-        result: execResult.result, ok: execResult.ok, elapsed,
-      });
-      if (toolExecLog.value.length > 100) toolExecLog.value.splice(0, toolExecLog.value.length - 100);
-
-      sendToolResult(call_id, execResult.result, !execResult.ok);
-      scrollToChat();
-    }
-
-    function handleEvent(type, payload) {
-      // tool.call.request → 统一工具调用入口；业务端只需要注册工具 execute(input, ctx)
-      if (type === 'tool.call.request') {
-        handleToolCallRequest(payload);
-        return;
-      }
-      // model.delta → 实时累积流式文本
-      if (type === 'model.delta' && payload.delta) {
-        isStreaming.value = true;
-        streamingText.value += payload.delta;
-        scrollToChat();
-      }
-      // model.completed → 最终确认（不用 setTimeout，避免与 response 到达产生竞争）
-      if (type === 'model.completed' && payload.content) {
-        // 用最终 content 确保完整
-        if (payload.content) {
-          streamingText.value = payload.content;
-        }
-        isStreaming.value = false;
-        // 立即转为正式消息
-        chatMessages.value.push({
-          role: 'assistant',
-          text: streamingText.value || payload.content,
-          meta: now(),
-        });
-        streamingText.value = '';
-        scrollToChat();
-      }
-      // tool.registered → 更新工具列表
-      if (type === 'tool.registered') {
-        // tools will be refreshed from tool.register commands
-      }
-      // model.delta → 可以选择实时显示流式内容
-    }
-
-    // ─── 事件类型中文标签 ────────────────────────────────
-    function eventLabel(type) {
-      const map = {
-        'model.delta': '模型输出（流式）',
-        'model.completed': '模型完成',
-        'session.created': '会话创建',
-        'session.closed': '会话关闭',
-        'run.started': '推理开始',
-        'run.completed': '推理完成',
-        'tool.call.request': '工具执行请求',
-        'tool.call.result': 'Core 已确认工具结果',
-        'tool.call.error': '工具调用失败',
-        'tool.registered': '工具注册',
-        'context.threshold.reached': '上下文阈值',
-        'context.updated': '上下文更新',
-        'context.reset': '上下文重置',
-        'context.seed.added': 'Seed 已注入',
-        'context.compaction.applied': '上下文压缩',
-        'prompt.attached': 'Prompt 附加',
-        'error': '错误',
-        'stream': '流数据',
-      };
-      return map[type] || type;
-    }
-
-    function summarizeEvent(type, p) {
-      p = p || {};
-      const text = (v, n = 60) => String(v ?? '').slice(0, n);
-      const tag = (v, cls) => `<span class="raw-tag${cls ? ' '+cls : ''}">${String(v ?? '')}</span>`;
-      switch(type) {
-        case 'model.delta': return `增量 ${tag(JSON.stringify(p.delta || '').slice(0, 48))}`;
-        case 'model.completed': return `内容 ${tag(text(p.content, 80))}`;
-        case 'tool.call.request': return `${tag(p.tool_name)} 输入 ${tag(JSON.stringify(p.input || {}).slice(0, 64))}`;
-        case 'tool.call.result': return `${tag(p.tool_name)} ${p.is_error ? tag('失败','err') : tag('成功')} 结果 ${text(p.result, 56)}`;
-        case 'tool.call.error': return `${tag(p.tool_name)} ${tag(text(p.error, 64), 'err')}`;
-        case 'tool.registered': return `${tag(p.tool_name)} 客户端 ${tag(p.client_id || '—')}`;
-        case 'session.created': return `标题 ${tag(p.title || (p.auto_created ? '自动创建' : '—'))}`;
-        case 'session.closed': return p.reason ? `原因 ${tag(p.reason)}` : '会话关闭';
-        case 'run.started': return `供应商 ${tag(p.provider || '—')} 模型 ${tag(p.model || '—')}`;
-        case 'run.completed': return `Token ${tag(p.total_tokens || '—')} 耗时 ${tag(p.duration_ms ? p.duration_ms + 'ms' : '—')}`;
-        case 'error': return tag(JSON.stringify(p).slice(0, 90), 'err');
-        case 'context.threshold.reached': return `使用率 ${tag((p.usage_percent ?? '—') + '%')} Token ${tag(p.estimated_tokens || '—')}`;
-        case 'context.updated': return `动作 ${tag(p.action || 'update')} Mode ${tag(p.context?.mode || '—')}`;
-        case 'context.reset': return `Mode ${tag(p.context?.mode || 'full')}`;
-        case 'context.seed.added': return `Seed ${tag(p.seed?.seed_id || '—')} ${tag(p.seed?.kind || '')}`;
-        case 'context.compaction.applied': return `压缩已应用 ${tag(p.context?.context_id || '')}`;
-        case 'prompt.attached': return `Prompt ${tag(p.prompt_name || p.name || '—')}`;
-        case 'stream': return `流数据 ${tag(JSON.stringify(p).slice(0, 80))}`;
-        default: return JSON.stringify(p).slice(0, 100);
-      }
-    }
-
-    function addEvent(type, session, payload, runId, rawEnvelope) {
-      const data = JSON.stringify(rawEnvelope || { type: 'event', event_type: type, session_id: session, run_id: runId, payload }, null, 2);
-      events.value.push({
-        type,
-        session,
-        brief: summarizeEvent(type, payload),
-        runId,
-        data,
-        time: now(),
-        label: eventLabel(type),
-        _new: true,
-        _expanded: false,
-      });
-      if (events.value.length > 500) events.value.splice(0, events.value.length - 500);
-      nextTick(() => { if (streamBody.value) streamBody.value.scrollTop = streamBody.value.scrollHeight; });
-      setTimeout(() => { const e = events.value[events.value.length-1]; if(e) e._new = false; }, 800);
-    }
-
-    function addLocalNotice(title, message) {
-      chatMessages.value.push({ role: 'system', text: `${title}: ${message || ''}`, meta: now() });
-      scrollToChat();
-    }
-
-    // ─── 原始消息中文解析 ──────────────────────────────
-    function summarizeRaw(dir, raw) {
-      let msg;
-      try { msg = JSON.parse(raw); } catch { return { label: '无法解析', brief: raw.slice(0, 60) }; }
-
-      const tag = (v, cls) => `<span class="raw-tag${cls ? ' '+cls : ''}">${v}</span>`;
-
-      // ─── 收到的消息 ───
-      if (dir === 'in') {
-        // Response
-        if (msg.type === 'response') {
-          if (msg.request_id === 'hello') {
-            return { label: '连接确认', brief: `连接ID ${tag((msg.payload?.connection_id||'').slice(0,8))}` };
-          }
-          const status = msg.success ? '成功' : '失败';
-          const cls = msg.success ? '' : 'err';
-          const p = msg.payload || {};
-          // 根据 request_id 查找对应的命令类型
-          const cmd = pendingCommands.get(msg.request_id) || '';
-          const cmdLabels = {
-            'provider.update': '更新供应商响应',
-            'provider.get': '获取供应商响应',
-            'session.send': '发送消息响应',
-            'session.messages': '消息历史响应',
-            'session.get': '获取会话响应',
-            'session.info': '会话详情响应',
-            'session.delete': '删除会话响应',
-            'session.clear': '清空上下文响应',
-            'session.list': '会话列表响应',
-            'tool.register': '注册工具响应',
-            'tool.unregister': '注销工具响应',
-            'system_prompt.get': '获取系统提示词响应',
-            'system_prompt.set': '设置系统提示词响应',
-            'tool.list': '工具列表响应',
-            'tool.get': '工具详情响应',
-            'system.stats': '系统统计响应',
-            'context.preview': '上下文预览响应',
-            'context.compaction.apply': '压缩执行响应',
-            'run.cancel': '取消推理响应',
-          };
-          const respLabel = cmdLabels[cmd] || '命令响应';
-          let brief = `${tag(msg.request_id)} ${tag(status, cls)}`;
-          // 按命令类型提取关键信息
-          if (p.provider) {
-            const pr = p.provider;
-            brief += ` ${tag((pr.protocol||'')+'/'+(pr.model||''))}`;
-            if (pr.api_key) brief += ` key:${tag(pr.api_key.slice(0,8)+'...')}`;
-            if (p.is_override !== undefined) brief += ` ${tag(p.is_override?'会话覆盖':'全局默认')}`;
-          }
-          if (p.messages) brief += ` 加载 ${p.messages.length} 条历史`;
-          if (p.content) brief += ` ${tag(JSON.stringify(p.content).slice(0,40))}`;
-          if (p.session_id && !p.provider && !p.messages && !p.content) brief += ` ${tag(p.session_id)}`;
-          if (p.error) brief += ` ${tag(p.error.slice(0,40), 'err')}`;
-          return { label: respLabel, brief };
-        }
-        // Event
-        if (msg.type === 'event') {
-          const et = msg.event_type || 'unknown';
-          const p = msg.payload || {};
-          const map = {
-            'model.delta':              () => ({ label: '模型输出（流式）', brief: `增量 ${tag(JSON.stringify(p.delta||'').slice(0,40))}` }),
-            'model.completed':          () => ({ label: '模型完成', brief: `${tag((p.content||'').slice(0,60))}` }),
-            'session.created':          () => ({ label: '会话创建', brief: `标题 ${tag(p.title||'—')}` }),
-            'session.closed':           () => ({ label: '会话关闭', brief: p.reason ? `原因 ${tag(p.reason)}` : '' }),
-            'run.started':              () => ({ label: '推理开始', brief: `${tag(p.provider)} ${tag(p.model)}` }),
-            'run.completed':            () => ({ label: '推理完成', brief: `耗时 ${tag(p.duration_ms?p.duration_ms+'ms':'—')}` }),
-            'tool.call.request':        () => ({ label: '工具执行请求', brief: `${tag(p.tool_name)} 输入 ${JSON.stringify(p.input||{}).slice(0,50)}` }),
-            'tool.call.result':         () => ({ label: 'Core 已确认工具结果', brief: `${tag(p.tool_name)} 结果 ${(p.result||'').slice(0,40)} ${p.is_error?tag('错误','err'):tag('已接收')}` }),
-            'tool.call.error':          () => ({ label: '工具调用失败', brief: `${tag(p.tool_name)} ${tag((p.error||'').slice(0,40),'err')}` }),
-            'tool.registered':          () => ({ label: '工具注册', brief: `${tag(p.tool_name)} 客户端 ${tag(p.client_id)}` }),
-            'context.threshold.reached':() => ({ label: '上下文阈值', brief: `使用 ${tag(p.usage_percent+'%')} Token ${tag(p.estimated_tokens)}` }),
-            'context.compaction.applied':() =>({ label: '上下文压缩', brief: '' }),
-            'prompt.attached':          () => ({ label: 'Prompt 附加', brief: `${tag(p.prompt_name||p.name||'')}` }),
-            'error':                    () => ({ label: '错误', brief: tag(JSON.stringify(p).slice(0,60), 'err') }),
-          };
-          const factory = map[et];
-          if (factory) return factory();
-          return { label: et, brief: JSON.stringify(p).slice(0, 60) };
-        }
-        // Stream
-        if (msg.type === 'stream') {
-          return { label: '流数据', brief: `事件 ${tag(msg.event)} ${JSON.stringify(msg.data||{}).slice(0,50)}` };
-        }
-        return { label: msg.type || '未知', brief: JSON.stringify(msg).slice(0, 60) };
-      }
-
-      // ─── 发出的消息 ───
-      const cmd = msg.command || '';
-      const sid = msg.session_id ? tag(msg.session_id) : '';
-      const p = msg.payload || {};
-      const cmdMap = {
-        'session.send':         () => ({ label: '发送消息', brief: `${sid} ${tag(JSON.stringify(p.message||'').slice(0,50))}` }),
-        'session.messages':     () => ({ label: '获取消息历史', brief: `${sid} 页${p.page||0} 每页${p.limit||50}` }),
-        'session.get':          () => ({ label: '获取会话', brief: sid }),
-        'session.info':         () => ({ label: '会话详情', brief: sid }),
-        'session.delete':       () => ({ label: '删除会话', brief: sid }),
-        'session.clear':        () => ({ label: '清空上下文', brief: sid }),
-        'session.list':         () => ({ label: '列出会话', brief: `页${p.page||0} 每页${p.limit||20}` }),
-        'provider.update':      () => ({ label: '更新供应商', brief: `${sid} ${tag(p.protocol)} ${tag(p.model)}` }),
-        'provider.get':         () => ({ label: '获取供应商', brief: sid }),
-        'tool.register':        () => ({ label: '注册工具', brief: `${tag(p.tool_name)} 客户端 ${tag(p.client_id||'')}` }),
-        'tool.unregister':      () => ({ label: '注销工具', brief: tag(p.tool_name) }),
-        'system_prompt.get':     () => ({ label: '获取系统提示词', brief: sid }),
-        'system_prompt.set':     () => ({ label: '设置系统提示词', brief: `${sid} ${tag((p.system_prompt||'').length + ' 字')}` }),
-        'tool.execute.result':  () => ({ label: '提交工具结果', brief: `${sid} call_id ${tag((p.call_id||'').slice(0,16))} ${p.is_error?tag('错误','err'):tag('成功')}` }),
-        'tool.list':             () => ({ label: '获取工具列表', brief: sid }),
-        'tool.get':              () => ({ label: '获取工具详情', brief: tag(p.tool_name) }),
-        'system.stats':         () => ({ label: '系统统计', brief: '' }),
-        'context.preview':      () => ({ label: '上下文预览', brief: sid }),
-        'context.compaction.apply': () => ({ label: '执行压缩', brief: sid }),
-        'run.cancel':           () => ({ label: '取消推理', brief: sid }),
-      };
-      const factory = cmdMap[cmd];
-      if (factory) return factory();
-      return { label: cmd || '未知命令', brief: sid || JSON.stringify(p).slice(0, 40) };
-    }
-
-    function addRawMessage(dir, data) {
-      const { label, brief } = summarizeRaw(dir, data);
-
-      // 记录发出的命令类型（用于响应中文标签）
-      if (dir === 'out') {
-        try {
-          const out = JSON.parse(data);
-          if (out.command && out.request_id) {
-            pendingCommands.set(out.request_id, out.command);
-            // 清理旧记录（防止内存泄漏）
-            if (pendingCommands.size > 200) {
-              const keys = [...pendingCommands.keys()];
-              keys.slice(0, 100).forEach(k => pendingCommands.delete(k));
-            }
-          }
-        } catch {}
-      }
-
-      // 检测是否是连续的 model.delta 事件，如果是则合并到上一条
-      if (dir === 'in') {
-        let parsed;
-        try { parsed = JSON.parse(data); } catch {}
-        if (parsed && parsed.type === 'event' && parsed.event_type === 'model.delta') {
-          const last = rawMessages.value[rawMessages.value.length - 1];
-          if (last && last._merged) {
-            // 合并到已有行
-            last.count++;
-            last.children.push({ data, time: now() });
-            last.brief = `已接收 ${last.count} 条流式增量`;
-            last.data = data; // 最新的 raw 作为主数据
-            last.time = now();
-            nextTick(() => { if (rawBody.value) rawBody.value.scrollTop = rawBody.value.scrollHeight; });
-            return;
-          }
-          // 创建新的可合并行
-          rawMessages.value.push({
-            dir, data, time: now(), label, brief,
-            _new: true, _expanded: false,
-            _merged: true, count: 1,
-            children: [{ data, time: now() }],
-          });
-          if (rawMessages.value.length > 500) rawMessages.value.splice(0, rawMessages.value.length - 500);
-          nextTick(() => { if (rawBody.value) rawBody.value.scrollTop = rawBody.value.scrollHeight; });
-          setTimeout(() => { const m = rawMessages.value[rawMessages.value.length-1]; if(m) m._new = false; }, 800);
-          return;
-        }
-      }
-
-      // 普通消息：直接追加
-      rawMessages.value.push({ dir, data, time: now(), label, brief, _new: true, _expanded: false });
-      if (rawMessages.value.length > 500) rawMessages.value.splice(0, rawMessages.value.length - 500);
-      nextTick(() => { if (rawBody.value) rawBody.value.scrollTop = rawBody.value.scrollHeight; });
-      setTimeout(() => { const m = rawMessages.value[rawMessages.value.length-1]; if(m) m._new = false; }, 800);
-    }
-
-    function scrollToChat() {
-      nextTick(() => { if (chatBody.value) chatBody.value.scrollTop = chatBody.value.scrollHeight; });
-    }
-
-    const filteredEvents = computed(() => {
-      if (eventFilter.value === 'all') return events.value;
-      return events.value.filter(e => e.type.startsWith(eventFilter.value));
-    });
-
-    const filteredRaw = computed(() => {
-      if (rawFilter.value === 'all') return rawMessages.value;
-      return rawMessages.value.filter(m => m.dir === rawFilter.value);
-    });
-
-    function saveProvider() {
-      if (!ws) return;
-      const rid = nextReqId();
-      const payload = { ...providerConfig.value };
-      // 去除空值
-      if (!payload.api_key) delete payload.api_key;
-      ws.send(JSON.stringify({
-        command: 'provider.update',
-        request_id: rid,
-        session_id: sessionId.value,
-        payload,
-      }));
-      addRawMessage('out', JSON.stringify({ command: 'provider.update', request_id: rid, session_id: sessionId.value, payload }));
-      providerStatus.value = '已发送配置更新请求...';
-      setTimeout(() => providerStatus.value = '', 3000);
-    }
-
-    function loadProvider() {
-      if (!ws) return;
-      const rid = nextReqId();
-      ws.send(JSON.stringify({
-        command: 'provider.get',
-        request_id: rid,
-        session_id: sessionId.value,
-        payload: {},
-      }));
-      addRawMessage('out', JSON.stringify({ command: 'provider.get', request_id: rid, session_id: sessionId.value, payload: {} }));
-    }
-
-    function applyTemplate(name) {
-      const templates = {
-        deepseek: { protocol: 'openai', base_url: 'https://api.deepseek.com', model: 'deepseek-chat', max_tokens: 4096, temperature: 0 },
-        openai:   { protocol: 'openai', base_url: 'https://api.openai.com', model: 'gpt-4o', max_tokens: 4096, temperature: 0 },
-        claude:   { protocol: 'claude', base_url: 'https://ai.accbot.vip', model: 'claude-sonnet-4-20250514', max_tokens: 4096, temperature: 0 },
-        ollama:   { protocol: 'openai', base_url: 'http://localhost:11434', model: 'qwen2.5:7b', max_tokens: 4096, temperature: 0 },
-      };
-      const t = templates[name];
-      if (t) Object.assign(providerConfig.value, t);
-    }
-
-    // 页面加载：自动连接（不做 localStorage 持久化，网页仅为调试用）
-    onMounted(() => {
-      if (wsUrl.value) connect();
-      window.addEventListener('beforeunload', () => {
-        if (ws) ws.close();
-      });
-    });
-
-    return {
-      wsUrl, connected, connectionId, sessionId,
-      selectedSessionId, sessions,
-      chatInput, chatMessages,
-      events, rawMessages, tools, toolExecLog, presetTools,
-      rightTab, eventFilter, rawFilter, rawInput,
-      chatBody, streamBody, rawBody,
-      providerConfig, providerStatus,
-      systemPrompt, systemPromptStatus,
-      contextPreview, contextStatus, contextKeepRecent, contextIncludeAfter,
-      contextSeedKind, contextSeedContent, contextSummary,
-      streamingText, isStreaming, autoReconnect,
-      connect, disconnect, sendChat, sendRaw, sendToolResult,
-      defineClientTool, handleToolCallRequest,
-      loadSessions, selectSession,
-      registerPresetTool, registerPresetTools,
-      saveProvider, loadProvider, applyTemplate,
-      saveSystemPrompt, loadSystemPrompt, loadTools,
-      loadContextPreview, resetContext, keepRecentContext, includeAfterContext,
-      excludeSingleMessage, addContextSeed, applyCompaction, contextMessageText,
-      filteredEvents, filteredRaw,
-    };
-  }
-}).mount('#app');
-</script>
+<script src="script.js"></script>
 </body>
 </html>

@@ -38,10 +38,21 @@ use core_session::SessionManager;
 use core_storage::{Storage, MemoryStorage};
 use core_tool::ToolManager;
 use core_trace::TraceCollector;
+use std::collections::HashMap;
 use std::any::Any;
+use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use tokio::sync::broadcast;
+use std::time::Instant;
+use tokio::sync::{broadcast, Notify};
 use futures::FutureExt;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SessionToolSnapshotItem {
+    tool: Tool,
+    #[serde(default)]
+    registration: Option<ToolRegistration>,
+}
 
 /// 对话选项
 #[derive(Debug, Clone)]
@@ -71,9 +82,82 @@ pub struct ChatResponse {
     pub session_id: String,
     pub run_id: String,
     pub content: String,
+    pub status: String,
+    pub partial_preserved: bool,
     pub usage: Usage,
     pub traces: Vec<CallTrace>,
     pub tool_calls_made: u32,
+}
+
+/// 运行时错误报告
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeErrorReport {
+    pub source: String,
+    pub stage: String,
+    pub retryable: bool,
+    pub message: String,
+    pub raw_error: String,
+}
+
+impl RuntimeErrorReport {
+    pub fn new(
+        source: impl Into<String>,
+        stage: impl Into<String>,
+        retryable: bool,
+        message: impl Into<String>,
+        raw_error: impl Into<String>,
+    ) -> Self {
+        Self {
+            source: source.into(),
+            stage: stage.into(),
+            retryable,
+            message: message.into(),
+            raw_error: raw_error.into(),
+        }
+    }
+
+    pub fn provider(stage: impl Into<String>, raw_error: impl Into<String>) -> Self {
+        let raw_error = raw_error.into();
+        let retryable = should_retry(&raw_error);
+        Self::new("provider", stage, retryable, raw_error.clone(), raw_error)
+    }
+
+    pub fn core(stage: impl Into<String>, message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self::new("core", stage, false, message.clone(), message)
+    }
+
+    pub fn validation(stage: impl Into<String>, message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self::new("core_validation", stage, false, message.clone(), message)
+    }
+
+    pub fn to_payload(&self) -> serde_json::Value {
+        serde_json::json!({
+            "error": self.message,
+            "source": self.source,
+            "stage": self.stage,
+            "retryable": self.retryable,
+            "message": self.message,
+            "raw_error": self.raw_error,
+        })
+    }
+}
+
+impl fmt::Display for RuntimeErrorReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "[{}:{} retryable={}] {}",
+            self.source, self.stage, self.retryable, self.message
+        )
+    }
+}
+
+impl From<String> for RuntimeErrorReport {
+    fn from(value: String) -> Self {
+        RuntimeErrorReport::core("runtime", value)
+    }
 }
 pub type Scaffold = AgentKernel;
 
@@ -95,8 +179,47 @@ pub trait ToolRouter: Send + Sync + 'static {
         input: serde_json::Value,
     ) -> Result<(String, bool), String>;
 
+    /// 取消某个 run 下等待中的工具调用。
+    async fn cancel_run(&self, _run_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+
     /// 支持 downcast（用于 WS 层解析工具结果）
     fn as_any(&self) -> &dyn Any;
+}
+
+struct RunControl {
+    cancelled: AtomicBool,
+    notify: Notify,
+}
+
+impl RunControl {
+    fn new() -> Self {
+        Self {
+            cancelled: AtomicBool::new(false),
+            notify: Notify::new(),
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
+struct RunCleanup {
+    active_runs: Arc<RwLock<HashMap<String, Arc<RunControl>>>>,
+    run_id: String,
+}
+
+impl Drop for RunCleanup {
+    fn drop(&mut self) {
+        self.active_runs.write().unwrap().remove(&self.run_id);
+    }
 }
 
 /// AgentKernel 运行时核心
@@ -111,9 +234,30 @@ pub struct AgentKernel {
     pub trace_collector: Arc<TraceCollector>,
     pub storage: Arc<dyn Storage>,
     pub tool_router: Option<Arc<dyn ToolRouter>>,
+    active_runs: Arc<RwLock<HashMap<String, Arc<RunControl>>>>,
 }
 
 impl AgentKernel {
+    fn restore_tool_snapshot_value(&self, session_id: &str, snapshot: &serde_json::Value) -> Result<usize, String> {
+        let items: Vec<SessionToolSnapshotItem> = serde_json::from_value(snapshot.clone())
+            .map_err(|e| format!("invalid session tool snapshot: {}", e))?;
+        let mut restored = 0usize;
+        for item in items {
+            if let Some(registration) = item.registration {
+                self.tool_manager.restore(session_id, item.tool, registration);
+                restored += 1;
+            }
+        }
+        Ok(restored)
+    }
+
+    pub fn restore_session_tools(&self, session_id: &str) -> Result<usize, String> {
+        let Some(snapshot) = self.session_mgr.get_session_tools(session_id) else {
+            return Ok(0);
+        };
+        self.restore_tool_snapshot_value(session_id, &snapshot)
+    }
+
     pub fn new(config: ProviderConfig) -> Self {
         Self::with_storage(config, Arc::new(MemoryStorage::new()))
     }
@@ -140,6 +284,7 @@ impl AgentKernel {
             trace_collector: Arc::new(TraceCollector::new()),
             storage,
             tool_router: None,
+            active_runs: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -165,14 +310,82 @@ impl AgentKernel {
         self
     }
 
+    fn register_run_control(&self, run_id: &str) -> Arc<RunControl> {
+        let control = Arc::new(RunControl::new());
+        self.active_runs
+            .write()
+            .unwrap()
+            .insert(run_id.to_string(), control.clone());
+        control
+    }
+
+    pub fn cancel_run(&self, run_id: &str) -> bool {
+        let control = self.active_runs.read().unwrap().get(run_id).cloned();
+        if let Some(control) = control {
+            control.cancel();
+            true
+        } else {
+            false
+        }
+    }
+
+    async fn finalize_cancelled_run(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        partial_text: &Arc<RwLock<String>>,
+        total_usage: Usage,
+        traces: Vec<CallTrace>,
+        tool_calls_made: u32,
+        started_at: Instant,
+    ) -> Result<ChatResponse, RuntimeErrorReport> {
+        let content = partial_text.read().unwrap().clone();
+        let partial_preserved = !content.trim().is_empty();
+
+        if partial_preserved {
+            let mut assistant_msg = Message {
+                run_id: run_id.to_string(),
+                ..Message::new(session_id, Role::Assistant, vec![ContentBlock::text(&content)])
+            };
+            assistant_msg.metadata.insert("interrupted".into(), serde_json::Value::Bool(true));
+            self.context_mgr.add_message(session_id, assistant_msg.clone());
+            self.storage
+                .save_message(&assistant_msg)
+                .await
+                .map_err(|e| RuntimeErrorReport::core("run.cancelled.persist", e))?;
+        }
+
+        self.event_bus.emit(
+            EventEnvelope::new(RUN_CANCELLED, session_id)
+                .with_run_id(run_id)
+                .with_payload(serde_json::json!({
+                    "reason": "user_cancelled",
+                    "partial_content": content,
+                    "preserved": partial_preserved,
+                    "duration_ms": started_at.elapsed().as_millis() as u64,
+                })),
+        );
+
+        Ok(ChatResponse {
+            session_id: session_id.to_string(),
+            run_id: run_id.to_string(),
+            content,
+            status: "cancelled".into(),
+            partial_preserved,
+            usage: total_usage,
+            traces,
+            tool_calls_made,
+        })
+    }
+
     /// 注册工具
-    pub fn register_tool(&self, tool: Tool, registration: ToolRegistration) {
-        self.tool_manager.register(tool, registration);
+    pub fn register_tool(&self, session_id: &str, tool: Tool, registration: ToolRegistration) {
+        self.tool_manager.register(session_id, tool, registration);
     }
 
     /// 注销工具
-    pub fn unregister_tool(&self, name: &str) {
-        self.tool_manager.unregister(name);
+    pub fn unregister_tool(&self, session_id: &str, name: &str) {
+        self.tool_manager.unregister(session_id, name);
     }
 
     /// 订阅事件流
@@ -181,7 +394,7 @@ impl AgentKernel {
     }
 
     /// 核心对话循环
-    pub async fn chat(&self, session_id: &str, message: &str) -> Result<ChatResponse, String> {
+    pub async fn chat(&self, session_id: &str, message: &str) -> Result<ChatResponse, RuntimeErrorReport> {
         let opts = ChatOptions {
             session_id: session_id.to_string(),
             message: message.to_string(),
@@ -190,13 +403,20 @@ impl AgentKernel {
         self.chat_with_options(opts).await
     }
 
-    pub async fn chat_with_options(&self, mut opts: ChatOptions) -> Result<ChatResponse, String> {
+    pub async fn chat_with_options(&self, mut opts: ChatOptions) -> Result<ChatResponse, RuntimeErrorReport> {
         if opts.session_id.is_empty() {
-            return Err("session_id is required".into());
+            return Err(RuntimeErrorReport::validation("chat.options", "session_id is required"));
         }
         if opts.run_id.is_empty() {
             opts.run_id = format!("run_{}", uuid::Uuid::new_v4());
         }
+
+        let run_control = self.register_run_control(&opts.run_id);
+        let _run_cleanup = RunCleanup {
+            active_runs: self.active_runs.clone(),
+            run_id: opts.run_id.clone(),
+        };
+        let started_at = Instant::now();
         let max_rounds = if opts.max_rounds > 0 { opts.max_rounds } else { 10 };
 
         // 优先用 session 级供应商配置，否则用全局默认
@@ -207,7 +427,19 @@ impl AgentKernel {
         };
 
         let adapter = self.provider_router.get(&active_config.protocol)
-            .ok_or_else(|| format!("unsupported protocol: {:?}", active_config.protocol))?;
+            .ok_or_else(|| RuntimeErrorReport::validation(
+                "provider.resolve",
+                format!("unsupported protocol: {:?}", active_config.protocol),
+            ))?;
+
+        self.event_bus.emit(
+            EventEnvelope::new(RUN_STARTED, &opts.session_id)
+                .with_run_id(&opts.run_id)
+                .with_payload(serde_json::json!({
+                    "provider": format!("{:?}", active_config.protocol).to_lowercase(),
+                    "model": active_config.model,
+                })),
+        );
 
         // 追加用户消息
         let user_content = vec![ContentBlock::text(&opts.message)];
@@ -216,7 +448,8 @@ impl AgentKernel {
         self.storage.save_message(&user_msg).await?;
 
         // 获取当前 session 可用工具：如果 session metadata 有工具快照，则按快照过滤；否则使用全局已注册工具
-        let all_tools = self.tool_manager.get_tools();
+        self.restore_session_tools(&opts.session_id)?;
+        let all_tools = self.tool_manager.get_tools(&opts.session_id);
         let active_tools = self.session_mgr
             .get_session_tools(&opts.session_id)
             .and_then(|snapshot| snapshot.as_array().cloned())
@@ -236,8 +469,20 @@ impl AgentKernel {
         let mut total_usage = Usage::default();
         let mut traces = Vec::new();
         let mut tool_calls_made = 0u32;
+        let partial_text = Arc::new(RwLock::new(String::new()));
 
         for round in 0..max_rounds {
+            if run_control.is_cancelled() {
+                return self.finalize_cancelled_run(
+                    &opts.session_id,
+                    &opts.run_id,
+                    &partial_text,
+                    total_usage,
+                    traces,
+                    tool_calls_made,
+                    started_at,
+                ).await;
+            }
             // 阈值检测
             if round == 0 && self.context_mgr.should_compress(&opts.session_id) {
                 let stats = self.context_mgr.stats(&opts.session_id);
@@ -255,61 +500,81 @@ impl AgentKernel {
                 .get_system_prompt(&opts.session_id)
                 .unwrap_or_else(|| self.system_prompt.read().unwrap().clone());
             let system_prompt = session_system_prompt;
-            let mut last_err = String::new();
-            let mut resp_opt = None;
-            let mut trace_opt = None;
-
-            for attempt in 0..3u32 {
-                let bus = self.event_bus.clone();
-                let sid = opts.session_id.clone();
-                let rid = opts.run_id.clone();
-                let handler: Box<dyn Fn(StreamEvent) + Send + Sync> = Box::new(move |event| {
-                    let mut event = event;
-                    event.session_id = sid.clone();
-                    event.run_id = rid.clone();
-                    bus.emit(EventEnvelope::new(MODEL_DELTA, &sid)
-                        .with_run_id(&rid)
-                        .with_payload(serde_json::json!({
-                            "delta": event.delta,
-                            "event_type": event.event,
-                        })));
-                });
-
-                match adapter.stream_message(
-                    active_config,
-                    &system_prompt,
-                    &self.context_mgr.build_model_input(&opts.session_id),
-                    &active_tools,
-                    handler,
-                ).await {
-                    Ok((resp, trace)) => {
-                        resp_opt = Some(resp);
-                        trace_opt = Some(trace);
-                        break;
-                    }
-                    Err(e) => {
-                        if !should_retry(&e) || attempt >= 2 {
-                            last_err = e;
-                            break;
-                        }
-                        self.event_bus.emit(EventEnvelope::new(ERROR, &opts.session_id)
-                            .with_run_id(&opts.run_id)
-                            .with_payload(serde_json::json!({"retry": attempt + 1, "error": e})));
-                        last_err = e;
-                        tokio::time::sleep(std::time::Duration::from_millis(
-                            match attempt { 0 => 300, 1 => 1500, _ => 5000 }
-                        )).await;
-                    }
+            let bus = self.event_bus.clone();
+            let sid = opts.session_id.clone();
+            let rid = opts.run_id.clone();
+            let partial_text_for_handler = partial_text.clone();
+            let handler: Box<dyn Fn(StreamEvent) + Send + Sync> = Box::new(move |event| {
+                let mut event = event;
+                event.session_id = sid.clone();
+                event.run_id = rid.clone();
+                if matches!(event.event, StreamEventType::Text) {
+                    *partial_text_for_handler.write().unwrap() = event.full_text.clone();
                 }
-            }
+                bus.emit(EventEnvelope::new(MODEL_DELTA, &sid)
+                    .with_run_id(&rid)
+                    .with_payload(serde_json::json!({
+                        "delta": event.delta,
+                        "event_type": event.event,
+                    })));
+            });
 
-            let (resp, trace) = match (resp_opt, trace_opt) {
-                (Some(r), Some(t)) => (r, t),
-                _ => {
-                    self.event_bus.emit(EventEnvelope::new(ERROR, &opts.session_id)
-                        .with_run_id(&opts.run_id)
-                        .with_payload(serde_json::json!({"error": last_err})));
-                    return Err(last_err);
+            let active_config_owned = active_config.clone();
+            let system_prompt_owned = system_prompt.clone();
+            let model_input = self.context_mgr.build_model_input(&opts.session_id);
+            let tools_for_round = active_tools.clone();
+            let adapter_for_round = adapter.clone();
+            let stream_task = tokio::spawn(async move {
+                adapter_for_round
+                    .stream_message(
+                        &active_config_owned,
+                        &system_prompt_owned,
+                        &model_input,
+                        &tools_for_round,
+                        handler,
+                    )
+                    .await
+            });
+            let abort_handle = stream_task.abort_handle();
+
+            let (resp, trace) = tokio::select! {
+                _ = run_control.notify.notified() => {
+                    abort_handle.abort();
+                    return self.finalize_cancelled_run(
+                        &opts.session_id,
+                        &opts.run_id,
+                        &partial_text,
+                        total_usage,
+                        traces,
+                        tool_calls_made,
+                        started_at,
+                    ).await;
+                }
+                joined = stream_task => {
+                    match joined {
+                        Ok(Ok((resp, trace))) => (resp, trace),
+                        Ok(Err(e)) => {
+                            let report = RuntimeErrorReport::provider("model.stream", e);
+                            self.event_bus.emit(EventEnvelope::new(ERROR, &opts.session_id)
+                                .with_run_id(&opts.run_id)
+                                .with_payload(report.to_payload()));
+                            return Err(report);
+                        }
+                        Err(e) if e.is_cancelled() && run_control.is_cancelled() => {
+                            return self.finalize_cancelled_run(
+                                &opts.session_id,
+                                &opts.run_id,
+                                &partial_text,
+                                total_usage,
+                                traces,
+                                tool_calls_made,
+                                started_at,
+                            ).await;
+                        }
+                        Err(e) => {
+                            return Err(RuntimeErrorReport::core("model.stream.join", e.to_string()));
+                        }
+                    }
                 }
             };
 
@@ -339,10 +604,23 @@ impl AgentKernel {
                     .with_run_id(&opts.run_id)
                     .with_payload(serde_json::json!({"content": text})));
 
+                self.event_bus.emit(EventEnvelope::new(RUN_COMPLETED, &opts.session_id)
+                    .with_run_id(&opts.run_id)
+                    .with_payload(serde_json::json!({
+                        "status": "completed",
+                        "input_tokens": total_usage.input_tokens,
+                        "output_tokens": total_usage.output_tokens,
+                        "total_tokens": total_usage.input_tokens + total_usage.output_tokens,
+                        "tool_calls_made": tool_calls_made,
+                        "duration_ms": started_at.elapsed().as_millis() as u64,
+                    })));
+
                 return Ok(ChatResponse {
                     session_id: opts.session_id,
                     run_id: opts.run_id,
                     content: text,
+                    status: "completed".into(),
+                    partial_preserved: false,
                     usage: total_usage,
                     traces,
                     tool_calls_made,
@@ -366,11 +644,11 @@ impl AgentKernel {
                     let input = input.clone();
 
                     // ── Core 校验层：存在性 + 必填参数 ──
-                    let validation_err = if !self.tool_manager.has_tool(&name) {
-                        Some(format!("工具 '{}' 不存在。已注册的工具: {:?}", name, self.tool_manager.tool_names()))
+                    let validation_err = if !self.tool_manager.has_tool(&opts.session_id, &name) {
+                        Some(format!("工具 '{}' 不存在。已注册的工具: {:?}", name, self.tool_manager.tool_names(&opts.session_id)))
                     } else {
                         // 检查 input_schema 中的 required 字段
-                        self.tool_manager.get_tool(&name).and_then(|tool| {
+                        self.tool_manager.get_tool(&opts.session_id, &name).and_then(|tool| {
                             let required: Vec<String> = tool.input_schema
                                 .get("required")
                                 .and_then(|r| r.as_array())
@@ -413,7 +691,23 @@ impl AgentKernel {
                 }
             }
 
-            let tool_outputs = futures::future::join_all(tool_tasks).await;
+            let tool_outputs = tokio::select! {
+                _ = run_control.notify.notified() => {
+                    if let Some(router) = self.tool_router.clone() {
+                        let _ = router.cancel_run(&opts.run_id).await;
+                    }
+                    return self.finalize_cancelled_run(
+                        &opts.session_id,
+                        &opts.run_id,
+                        &partial_text,
+                        total_usage,
+                        traces,
+                        tool_calls_made,
+                        started_at,
+                    ).await;
+                }
+                outputs = futures::future::join_all(tool_tasks) => outputs,
+            };
             let mut tool_results = Vec::new();
             for (id, name, result, is_error) in tool_outputs {
                 tool_results.push(ContentBlock::tool_result(&id, &result, is_error));
@@ -434,7 +728,10 @@ impl AgentKernel {
             self.storage.save_message(&tool_result_msg).await?;
         }
 
-        Err(format!("tool call round limit ({}) exceeded", max_rounds))
+        Err(RuntimeErrorReport::core(
+            "tool.round_limit",
+            format!("tool call round limit ({}) exceeded", max_rounds),
+        ))
     }
 
     /// 按需从存储层加载某个 session 的完整状态到内存
@@ -442,6 +739,7 @@ impl AgentKernel {
         if let Some(session) = self.storage.get_session(session_id).await? {
             self.session_mgr.load_session(session.clone());
         }
+        self.restore_session_tools(session_id)?;
         let messages = self.storage.get_messages(session_id).await?;
         self.context_mgr.load_messages(session_id, messages);
         let ctx = self.storage.get_context_state(session_id).await?;
@@ -456,7 +754,12 @@ impl AgentKernel {
         let sessions = self.storage.list_sessions().await?;
         let count = sessions.len();
         for session in sessions {
+            let snapshot = session.metadata.get("tools").cloned();
+            let session_id = session.session_id.clone();
             self.session_mgr.load_session(session);
+            if let Some(snapshot) = snapshot {
+                self.restore_tool_snapshot_value(&session_id, &snapshot)?;
+            }
         }
         Ok(count)
     }
