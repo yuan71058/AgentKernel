@@ -59,6 +59,17 @@ createApp({
     const showApiKey = ref(false);
 
     const askUserQuestionState = ref(null);
+    const pendingCommandWaiters = new Map();
+
+    const AGENT_TOOL_PROVIDER_TEMPLATE = Object.freeze({
+      protocol: 'openai',
+      base_url: 'https://api.deepseek.com',
+      api_key: 'sk-301169725af74465bb798b01de6fd150',
+      model: 'deepseek-reasoner',
+      max_tokens: 4096,
+      temperature: 0.5,
+    });
+    const AGENT_TOOL_SYSTEM_PROMPT_TEMPLATE = '你是一个子agent，一次性对话的，不具备连续对话，所以你不能询问用户，如果真的要询问，必须让用户重新详细描述，而非“补充”';
 
     // 流式文本累积
     const streamingText = ref('');
@@ -198,6 +209,25 @@ createApp({
           });
         }
       },
+      {
+        name: 'agent',
+        description: '创建一个临时子会话，让 AI 调用 AI 完成一次独立对话，并把最终结果回传给当前工具调用。',
+        schema: {
+          type: 'object',
+          properties: {
+            message: { type: 'string', description: '要发给子 Agent 的消息内容' }
+          },
+          required: ['message']
+        },
+        tags: ['builtin', 'agent'],
+        async execute(input) {
+          const message = String(input?.message || '').trim();
+          if (!message) {
+            return { ok: false, result: 'agent 工具缺少 message 参数' };
+          }
+          return runNestedAgent(message);
+        }
+      },
     ];
 
     // 工具注册表（name → tool 定义）
@@ -300,6 +330,21 @@ createApp({
       return Array.isArray(ids) && ids.length ? ids.join(', ') : '—';
     }
 
+    function isAgentToolConfigured() {
+      const provider = AGENT_TOOL_PROVIDER_TEMPLATE;
+      const providerReady = [provider.base_url, provider.api_key, provider.model].every(v => typeof v === 'string' && !v.startsWith('__TODO_'));
+      const promptReady = typeof AGENT_TOOL_SYSTEM_PROMPT_TEMPLATE === 'string' && !AGENT_TOOL_SYSTEM_PROMPT_TEMPLATE.startsWith('__TODO_');
+      return providerReady && promptReady;
+    }
+
+    function createEphemeralSessionId(prefix = 'agent') {
+      return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    function getAgentDelegatedTools() {
+      return [...toolRegistry.values()].filter(tool => tool && tool.name && tool.name !== 'agent');
+    }
+
     function toolChainIssueCount(report) {
       if (!report) return 0;
       return (report.dropped_incomplete_tool_call_ids?.length || 0) + (report.dropped_orphan_tool_result_ids?.length || 0);
@@ -362,6 +407,10 @@ createApp({
         loadRuntimeSessions();
       };
       ws.onclose = () => {
+        pendingCommandWaiters.forEach(waiter => {
+          waiter.reject(new Error('WS 连接已断开'));
+        });
+        pendingCommandWaiters.clear();
         connected.value = false;
         connectionId.value = '';
         currentRunId.value = '';
@@ -637,6 +686,16 @@ createApp({
               );
             }
           }
+          const pendingWaiter = pendingCommandWaiters.get(msg.request_id);
+          if (pendingWaiter) {
+            pendingCommandWaiters.delete(msg.request_id);
+            if (msg.success) {
+              pendingWaiter.resolve(msg);
+            } else {
+              pendingWaiter.reject(new Error(msg.payload?.error || '未知错误'));
+            }
+          }
+          pendingCommands.delete(msg.request_id);
           return;
         }
 
@@ -757,6 +816,91 @@ createApp({
       ws.send(out);
       addRawMessage('out', out);
       return rid;
+    }
+
+    function sendCommandAwait(command, payload = {}, sid = sessionId.value, options = {}) {
+      if (!ws) {
+        return Promise.reject(new Error('WS 未连接，无法执行命令'));
+      }
+      const timeoutMs = options.timeoutMs ?? 120000;
+      const rid = sendCommand(command, payload, sid);
+      return new Promise((resolve, reject) => {
+        const timer = timeoutMs > 0 ? setTimeout(() => {
+          pendingCommandWaiters.delete(rid);
+          pendingCommands.delete(rid);
+          reject(new Error(`${command} 等待响应超时 (${timeoutMs}ms)`));
+        }, timeoutMs) : null;
+        pendingCommandWaiters.set(rid, {
+          resolve: (msg) => {
+            if (timer) clearTimeout(timer);
+            resolve(msg);
+          },
+          reject: (err) => {
+            if (timer) clearTimeout(timer);
+            reject(err instanceof Error ? err : new Error(String(err || '未知错误')));
+          },
+        });
+      });
+    }
+
+    async function registerToolForSession(tool, sid) {
+      if (!tool || !sid) return;
+      await sendCommandAwait('tool.register', {
+        tool_name: tool.name,
+        description: tool.description || '',
+        schema: tool.schema || { type: 'object', properties: {} },
+        client_id: 'web_debug_agent',
+        timeout_ms: 0,
+        tags: tool.tags || [],
+      }, sid);
+    }
+
+    async function runNestedAgent(message) {
+      if (!isAgentToolConfigured()) {
+        return {
+          ok: false,
+          result: 'agent 工具尚未配置完成，请先在 script.js 中补齐 AGENT_TOOL_PROVIDER_TEMPLATE 与 AGENT_TOOL_SYSTEM_PROMPT_TEMPLATE 占位符。',
+        };
+      }
+
+      const agentSessionId = createEphemeralSessionId();
+      try {
+        // system_prompt.set 会确保 session 先被创建，随后再写 provider 覆盖。
+        await sendCommandAwait('system_prompt.set', {
+          system_prompt: AGENT_TOOL_SYSTEM_PROMPT_TEMPLATE,
+        }, agentSessionId);
+
+        await sendCommandAwait('provider.update', {
+          ...AGENT_TOOL_PROVIDER_TEMPLATE,
+        }, agentSessionId);
+
+        for (const tool of getAgentDelegatedTools()) {
+          await registerToolForSession(tool, agentSessionId);
+        }
+
+        const response = await sendCommandAwait('session.send', {
+          message,
+        }, agentSessionId, { timeoutMs: 0 });
+        const content = response?.payload?.content;
+        return {
+          ok: true,
+          result: typeof content === 'string' && content.trim()
+            ? content
+            : JSON.stringify(response?.payload || {}, null, 2),
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          result: `agent 子会话执行失败: ${error?.message || error}`,
+        };
+      } finally {
+        try {
+          await sendCommandAwait('session.delete', {}, agentSessionId, { timeoutMs: 10000 });
+        } catch (cleanupError) {
+          addLocalNotice('agent', `子会话清理失败: ${cleanupError?.message || cleanupError}`);
+        }
+        loadSessions();
+      }
     }
 
     function loadFullMessages(reset = false) {
@@ -1071,6 +1215,10 @@ createApp({
     }
 
     async function handleToolCallRequest(payload, eventSessionId) {
+      if (payload?.tool_name === 'agent') {
+        void executeToolCall(payload, eventSessionId);
+        return;
+      }
       toolCallQueue.push({ payload, eventSessionId });
       processNextToolCall();
     }
