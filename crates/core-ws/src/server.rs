@@ -22,7 +22,7 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc, oneshot, broadcast};
 use tracing::{info, warn, debug};
@@ -77,6 +77,7 @@ impl ToolRouter for WsToolRouter {
         tool_name: &str,
         call_id: &str,
         input: serde_json::Value,
+        timeout_ms: u64,
     ) -> Result<(String, bool), String> {
         let (tx, rx) = oneshot::channel::<serde_json::Value>();
 
@@ -93,13 +94,23 @@ impl ToolRouter for WsToolRouter {
         self.event_bus.emit(
             EventEnvelope::new(TOOL_CALL_REQUEST, session_id)
                 .with_run_id(run_id)
-                .with_payload(json!({"tool_name": tool_name, "call_id": call_id, "input": input})),
+                .with_payload(json!({
+                    "tool_name": tool_name,
+                    "call_id": call_id,
+                    "input": input,
+                    "timeout_ms": timeout_ms,
+                })),
         );
 
-        info!(call_id = %call_id, tool = %tool_name, "waiting for tool result from client");
+        info!(call_id = %call_id, tool = %tool_name, timeout_ms, "waiting for tool result from client");
 
-        // 等待客户端执行结果（30 秒超时）
-        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+        let wait_result = if timeout_ms == 0 {
+            Ok(rx.await)
+        } else {
+            tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), rx).await
+        };
+
+        match wait_result {
             Ok(Ok(val)) => {
                 let content = val["content"].as_str().unwrap_or("").to_string();
                 let is_error = val["is_error"].as_bool().unwrap_or(false);
@@ -113,7 +124,7 @@ impl ToolRouter for WsToolRouter {
             Err(_) => {
                 // 超时
                 self.pending.lock().await.remove(call_id);
-                Err(format!("tool '{}' timed out after 30s", tool_name))
+                Err(format!("tool '{}' timed out after {}ms", tool_name, timeout_ms))
             }
         }
     }
@@ -180,6 +191,7 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
                 commands::UPDATE_PROVIDER,
                 commands::GET_PROVIDER,
                 commands::CANCEL_RUN,
+                commands::RUNTIME_SESSIONS,
                 commands::GET_SESSION,
                 commands::SESSION_INFO,
                 commands::SESSION_DELETE,
@@ -304,6 +316,9 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
                     "run_id": run_id,
                     "cancelled": cancelled,
                 })).await;
+            }
+            commands::RUNTIME_SESSIONS => {
+                handle_runtime_sessions(&scaffold, &tx_clone, &request_id).await;
             }
             commands::GET_SESSION => {
                 if !session_id.is_empty() {
@@ -599,7 +614,7 @@ async fn handle_tool_list(
             "description": t.description,
             "input_schema": t.input_schema,
             "client_id": reg.as_ref().map(|r| r.client_id.as_str()).unwrap_or(""),
-            "timeout_ms": reg.as_ref().map(|r| r.timeout_ms).unwrap_or(30_000),
+            "timeout_ms": reg.as_ref().map(|r| r.timeout_ms),
             "tags": reg.as_ref().map(|r| &r.tags).unwrap_or(&empty_tags),
         })
     }).collect();
@@ -626,7 +641,7 @@ async fn handle_register_tool(
     let perms: Vec<String> = payload["permissions"].as_array()
         .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
-    let timeout = payload["timeout_ms"].as_u64().unwrap_or(30_000);
+    let timeout = payload["timeout_ms"].as_u64().unwrap_or(0);
     let tags: Vec<String> = payload["tags"].as_array()
         .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
@@ -663,6 +678,25 @@ async fn handle_register_tool(
 
     send_ok(tx, request_id, json!({"registered": name, "session_id": session_id})).await;
     info!(tool = %name, client = %client_id, session_id = %session_id, "tool registered via ws");
+}
+
+async fn handle_runtime_sessions(
+    scaffold: &AgentKernel,
+    tx: &mpsc::Sender<WsMessage>,
+    request_id: &str,
+) {
+    let active_runs = scaffold.list_active_runs();
+    let mut session_set = HashSet::new();
+    for run in &active_runs {
+        session_set.insert(run.session_id.clone());
+    }
+
+    send_ok(tx, request_id, json!({
+        "running_session_count": session_set.len(),
+        "running_run_count": active_runs.len(),
+        "sessions": session_set.into_iter().collect::<Vec<_>>(),
+        "runs": active_runs,
+    })).await;
 }
 
 async fn handle_get_session(

@@ -88,6 +88,43 @@
             </div>
 
             <div class="config-section">
+              <div class="config-title">
+                当前运行中 Sessions / Runs
+                <span>来自 `runtime.sessions`，用于查看当前 Core 内仍在执行的 runtime</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:10px;justify-content:space-between;margin-bottom:12px">
+                <div style="font-size:12px;color:var(--text3)">
+                  {{ runtimeRuntimeStatus || '尚未拉取' }}
+                </div>
+                <button class="btn" @click="loadRuntimeSessions" :disabled="!connected || runtimeLoading" style="padding:4px 10px;font-size:11px">
+                  {{ runtimeLoading ? '刷新中...' : '刷新' }}
+                </button>
+              </div>
+              <div class="stats-panel" style="margin-top:0">
+                <div class="stat-row"><span class="stat-label">运行中 Session 数</span><span class="stat-value">{{ runtimeSessions.length }}</span></div>
+                <div class="stat-row"><span class="stat-label">运行中 Run 数</span><span class="stat-value">{{ runtimeRuns.length }}</span></div>
+              </div>
+              <template v-if="runtimeRuns.length === 0">
+                <div class="config-hint" style="margin-top:12px;color:var(--text3)">当前没有正在 runtime 中的 run。</div>
+              </template>
+              <template v-for="run in runtimeRuns" :key="run.run_id">
+                <div class="tool-card" style="padding:12px 16px">
+                  <div style="display:flex;align-items:center;gap:10px;justify-content:space-between">
+                    <div style="display:flex;align-items:center;gap:8px;min-width:0">
+                      <span class="tool-name" style="font-size:13px">{{ run.session_id }}</span>
+                      <span class="tool-tag" :style="{color: run.status === 'cancelling' ? 'var(--orange)' : 'var(--blue)'}">{{ runStatusLabel(run.status) }}</span>
+                      <span v-if="run.session_id === sessionId" class="tool-tag" style="color:var(--green)">当前会话</span>
+                    </div>
+                    <span style="font-size:11px;color:var(--text3)">{{ run.duration_ms }}ms</span>
+                  </div>
+                  <div class="tool-meta" style="margin-top:8px;padding-top:8px">
+                    <span>run_id: {{ run.run_id }}</span>
+                  </div>
+                </div>
+              </template>
+            </div>
+
+            <div class="config-section">
               <div class="config-title">面板作用说明</div>
               <div class="config-hint">事件流只展示 Core 主动推送的运行时事件，例如 `run.started`、`model.delta`、`tool.call.request`、`run.cancelled`。</div>
               <div class="config-hint">通讯日志展示 WS 收发原文，适合核对命令、响应和事件是否真实到达。</div>
@@ -171,7 +208,7 @@
                 <div class="tool-desc">{{ t.description }}</div>
                 <div class="tool-meta">
                   <span>client: {{ t.client }}</span>
-                  <span>超时: {{ t.timeout }}ms</span>
+                  <span>超时: {{ t.timeout }}</span>
                 </div>
               </div>
             </template>

@@ -11,13 +11,11 @@ pub struct RegisterToolRequest {
     pub client_id: String,
     #[serde(default)]
     pub permissions: Vec<String>,
-    #[serde(default = "default_timeout")]
+    #[serde(default)]
     pub timeout_ms: u64,
     #[serde(default)]
     pub tags: Vec<String>,
 }
-
-fn default_timeout() -> u64 { 30_000 }
 
 /// 供应商更新请求
 #[derive(Debug, Clone, Serialize, Deserialize)]

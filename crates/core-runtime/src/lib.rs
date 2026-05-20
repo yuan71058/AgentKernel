@@ -177,6 +177,7 @@ pub trait ToolRouter: Send + Sync + 'static {
         tool_name: &str,
         call_id: &str,
         input: serde_json::Value,
+        timeout_ms: u64,
     ) -> Result<(String, bool), String>;
 
     /// 取消某个 run 下等待中的工具调用。
@@ -211,8 +212,22 @@ impl RunControl {
     }
 }
 
+struct ActiveRunEntry {
+    session_id: String,
+    started_at: Instant,
+    control: Arc<RunControl>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ActiveRunSnapshot {
+    pub session_id: String,
+    pub run_id: String,
+    pub duration_ms: u64,
+    pub status: String,
+}
+
 struct RunCleanup {
-    active_runs: Arc<RwLock<HashMap<String, Arc<RunControl>>>>,
+    active_runs: Arc<RwLock<HashMap<String, ActiveRunEntry>>>,
     run_id: String,
 }
 
@@ -234,7 +249,7 @@ pub struct AgentKernel {
     pub trace_collector: Arc<TraceCollector>,
     pub storage: Arc<dyn Storage>,
     pub tool_router: Option<Arc<dyn ToolRouter>>,
-    active_runs: Arc<RwLock<HashMap<String, Arc<RunControl>>>>,
+    active_runs: Arc<RwLock<HashMap<String, ActiveRunEntry>>>,
 }
 
 impl AgentKernel {
@@ -310,23 +325,51 @@ impl AgentKernel {
         self
     }
 
-    fn register_run_control(&self, run_id: &str) -> Arc<RunControl> {
+    fn register_run_control(&self, session_id: &str, run_id: &str, started_at: Instant) -> Arc<RunControl> {
         let control = Arc::new(RunControl::new());
         self.active_runs
             .write()
             .unwrap()
-            .insert(run_id.to_string(), control.clone());
+            .insert(run_id.to_string(), ActiveRunEntry {
+                session_id: session_id.to_string(),
+                started_at,
+                control: control.clone(),
+            });
         control
     }
 
     pub fn cancel_run(&self, run_id: &str) -> bool {
-        let control = self.active_runs.read().unwrap().get(run_id).cloned();
+        let control = self.active_runs
+            .read()
+            .unwrap()
+            .get(run_id)
+            .map(|entry| entry.control.clone());
         if let Some(control) = control {
             control.cancel();
             true
         } else {
             false
         }
+    }
+
+    pub fn list_active_runs(&self) -> Vec<ActiveRunSnapshot> {
+        let mut runs: Vec<ActiveRunSnapshot> = self.active_runs
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(run_id, entry)| ActiveRunSnapshot {
+                session_id: entry.session_id.clone(),
+                run_id: run_id.clone(),
+                duration_ms: entry.started_at.elapsed().as_millis() as u64,
+                status: if entry.control.is_cancelled() {
+                    "cancelling".into()
+                } else {
+                    "running".into()
+                },
+            })
+            .collect();
+        runs.sort_by(|a, b| a.session_id.cmp(&b.session_id).then_with(|| a.run_id.cmp(&b.run_id)));
+        runs
     }
 
     async fn finalize_cancelled_run(
@@ -411,12 +454,12 @@ impl AgentKernel {
             opts.run_id = format!("run_{}", uuid::Uuid::new_v4());
         }
 
-        let run_control = self.register_run_control(&opts.run_id);
+        let started_at = Instant::now();
+        let run_control = self.register_run_control(&opts.session_id, &opts.run_id, started_at);
         let _run_cleanup = RunCleanup {
             active_runs: self.active_runs.clone(),
             run_id: opts.run_id.clone(),
         };
-        let started_at = Instant::now();
         let max_rounds = if opts.max_rounds > 0 { opts.max_rounds } else { 10 };
 
         // 优先用 session 级供应商配置，否则用全局默认
@@ -679,8 +722,12 @@ impl AgentKernel {
                     } else if let Some(router) = self.tool_router.clone() {
                         let session_id = opts.session_id.clone();
                         let run_id = opts.run_id.clone();
+                        let timeout_ms = self.tool_manager
+                            .get_registration(&session_id, &name)
+                            .map(|registration| registration.timeout_ms)
+                            .unwrap_or(0);
                         tool_tasks.push(async move {
-                            match router.execute(&session_id, &run_id, &name, &id, input).await {
+                            match router.execute(&session_id, &run_id, &name, &id, input, timeout_ms).await {
                                 Ok((result, is_error)) => (id, name, result, is_error),
                                 Err(e) => (id, name, format!("tool routing error: {}", e), true),
                             }

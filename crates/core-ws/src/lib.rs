@@ -58,6 +58,7 @@ pub mod commands {
     pub const SESSION_CLEAR: &str = "session.clear";
     pub const SESSION_MESSAGES: &str = "session.messages";
     pub const CANCEL_RUN: &str = "run.cancel";
+    pub const RUNTIME_SESSIONS: &str = "runtime.sessions";
 
     // ─── 系统级（session_id 为空或忽略）─────────
     pub const LIST_SESSIONS: &str = "session.list";
