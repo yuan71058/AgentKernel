@@ -62,6 +62,62 @@ struct SessionToolSnapshotItem {
     registration: Option<ToolRegistration>,
 }
 
+const DEFAULT_REPEATED_TOOL_CALL_LIMIT: u32 = 10;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ToolCallFingerprint {
+    tool_name: String,
+    input_json: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RepeatedToolCallGuard {
+    last_fingerprint: Option<ToolCallFingerprint>,
+    consecutive_count: u32,
+}
+
+impl RepeatedToolCallGuard {
+    fn observe(&mut self, tool_name: &str, input: &serde_json::Value) -> u32 {
+        let fingerprint = ToolCallFingerprint {
+            tool_name: tool_name.to_string(),
+            input_json: canonicalize_json(input),
+        };
+        if self.last_fingerprint.as_ref() == Some(&fingerprint) {
+            self.consecutive_count += 1;
+        } else {
+            self.last_fingerprint = Some(fingerprint);
+            self.consecutive_count = 1;
+        }
+        self.consecutive_count
+    }
+
+    fn last(&self) -> Option<&ToolCallFingerprint> {
+        self.last_fingerprint.as_ref()
+    }
+}
+
+fn canonicalize_json(value: &serde_json::Value) -> String {
+    fn normalize(value: &serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.iter().map(normalize).collect())
+            }
+            serde_json::Value::Object(map) => {
+                let mut entries: Vec<_> = map.iter().collect();
+                entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+                let mut normalized = serde_json::Map::new();
+                for (key, value) in entries {
+                    normalized.insert(key.clone(), normalize(value));
+                }
+                serde_json::Value::Object(normalized)
+            }
+            _ => value.clone(),
+        }
+    }
+
+    serde_json::to_string(&normalize(value)).unwrap_or_else(|_| "null".to_string())
+}
+
 /// 对话选项
 #[derive(Debug, Clone)]
 pub struct ChatOptions {
@@ -69,7 +125,7 @@ pub struct ChatOptions {
     pub run_id: String,
     pub message: String,
     pub images: Vec<String>,
-    pub max_rounds: u32,
+    pub max_repeated_tool_calls: u32,
 }
 
 impl Default for ChatOptions {
@@ -79,7 +135,7 @@ impl Default for ChatOptions {
             run_id: String::new(),
             message: String::new(),
             images: Vec::new(),
-            max_rounds: 10,
+            max_repeated_tool_calls: DEFAULT_REPEATED_TOOL_CALL_LIMIT,
         }
     }
 }
@@ -468,7 +524,11 @@ impl AgentKernel {
             active_runs: self.active_runs.clone(),
             run_id: opts.run_id.clone(),
         };
-        let max_rounds = if opts.max_rounds > 0 { opts.max_rounds } else { 10 };
+        let repeated_tool_call_limit = if opts.max_repeated_tool_calls > 0 {
+            opts.max_repeated_tool_calls
+        } else {
+            DEFAULT_REPEATED_TOOL_CALL_LIMIT
+        };
 
         // 优先用 session 级供应商配置，否则用全局默认
         let session_override = self.session_mgr.get_provider_override(&opts.session_id);
@@ -521,8 +581,10 @@ impl AgentKernel {
         let mut traces = Vec::new();
         let mut tool_calls_made = 0u32;
         let partial_text = Arc::new(RwLock::new(String::new()));
+        let mut repeated_tool_call_guard = RepeatedToolCallGuard::default();
+        let mut round = 0u32;
 
-        for round in 0..max_rounds {
+        loop {
             if run_control.is_cancelled() {
                 return self.finalize_cancelled_run(
                     &opts.session_id,
@@ -686,6 +748,36 @@ impl AgentKernel {
                 });
             }
 
+            for tool_use in &tool_uses {
+                if let ContentBlock::ToolUse { name, input, .. } = tool_use {
+                    let consecutive_count = repeated_tool_call_guard.observe(name, input);
+                    if consecutive_count >= repeated_tool_call_limit {
+                        let fingerprint = repeated_tool_call_guard
+                            .last()
+                            .cloned()
+                            .unwrap_or(ToolCallFingerprint {
+                                tool_name: name.clone(),
+                                input_json: canonicalize_json(input),
+                            });
+                        let report = RuntimeErrorReport::core(
+                            "tool.repeated_call_loop",
+                            format!(
+                                "detected repeated tool call loop: tool '{}' with identical input repeated {} times consecutively; input={}",
+                                fingerprint.tool_name,
+                                consecutive_count,
+                                fingerprint.input_json
+                            ),
+                        );
+                        self.event_bus.emit(
+                            EventEnvelope::new(ERROR, &opts.session_id)
+                                .with_run_id(&opts.run_id)
+                                .with_payload(report.to_payload()),
+                        );
+                        return Err(report);
+                    }
+                }
+            }
+
             // 保存助手消息（含 tool_use）
             let assistant_tool_msg = Message {
                 run_id: opts.run_id.clone(),
@@ -789,12 +881,8 @@ impl AgentKernel {
             let tool_result_msg = Message::new(&opts.session_id, Role::User, tool_results);
             self.context_mgr.add_message(&opts.session_id, tool_result_msg.clone());
             self.storage.save_message(&tool_result_msg).await?;
+            round = round.saturating_add(1);
         }
-
-        Err(RuntimeErrorReport::core(
-            "tool.round_limit",
-            format!("tool call round limit ({}) exceeded", max_rounds),
-        ))
     }
 
     /// 按需从存储层加载某个 session 的完整状态到内存
@@ -835,5 +923,48 @@ impl AgentKernel {
     /// 清除 session
     pub fn clear_session(&self, session_id: &str) {
         self.context_mgr.remove_session(session_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{canonicalize_json, RepeatedToolCallGuard};
+
+    #[test]
+    fn canonicalize_json_sorts_object_keys_recursively() {
+        let input = serde_json::json!({
+            "b": 2,
+            "a": {
+                "z": true,
+                "m": [ {"k": 2, "a": 1} ]
+            }
+        });
+
+        assert_eq!(
+            canonicalize_json(&input),
+            r#"{"a":{"m":[{"a":1,"k":2}],"z":true},"b":2}"#
+        );
+    }
+
+    #[test]
+    fn repeated_tool_call_guard_detects_consecutive_identical_calls() {
+        let mut guard = RepeatedToolCallGuard::default();
+        let first = serde_json::json!({"b": 2, "a": 1});
+        let same_different_order = serde_json::json!({"a": 1, "b": 2});
+
+        for _ in 0..9 {
+            assert!(guard.observe("calc", &first) < 10);
+        }
+
+        assert_eq!(guard.observe("calc", &same_different_order), 10);
+    }
+
+    #[test]
+    fn repeated_tool_call_guard_resets_when_tool_or_input_changes() {
+        let mut guard = RepeatedToolCallGuard::default();
+        assert_eq!(guard.observe("calc", &serde_json::json!({"expression": "1+1"})), 1);
+        assert_eq!(guard.observe("calc", &serde_json::json!({"expression": "1+1"})), 2);
+        assert_eq!(guard.observe("calc", &serde_json::json!({"expression": "2+2"})), 1);
+        assert_eq!(guard.observe("echo", &serde_json::json!({"text": "2+2"})), 1);
     }
 }

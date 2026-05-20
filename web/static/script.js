@@ -880,6 +880,7 @@ createApp({
 
         const response = await sendCommandAwait('session.send', {
           message,
+          max_repeated_tool_calls: 10,
         }, agentSessionId, { timeoutMs: 0 });
         const content = response?.payload?.content;
         return {
