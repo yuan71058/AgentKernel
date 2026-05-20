@@ -19,6 +19,7 @@ pub mod event_types {
     pub const RUN_COMPLETED: &str = "run.completed";
     pub const MODEL_DELTA: &str = "model.delta";
     pub const MODEL_COMPLETED: &str = "model.completed";
+    pub const TOOL_CHAIN_DIAGNOSED: &str = "tool_chain.diagnosed";
     pub const TOOL_CALL_REQUEST: &str = "tool.call.request";
     pub const TOOL_CALL_RESULT: &str = "tool.call.result";
     pub const TOOL_CALL_ERROR: &str = "tool.call.error";

@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use core_protocol::*;
-use crate::{convert_for_openai, CallTrace, ProviderAdapter};
+use crate::{convert_for_openai, prepare_model_input, CallTrace, ProviderAdapter};
 use std::time::Instant;
 
 pub struct OpenAIAdapter;
@@ -21,11 +21,13 @@ impl ProviderAdapter for OpenAIAdapter {
     ) -> Result<(Response, CallTrace), String> {
         let start = Instant::now();
         let url = build_url(&config.base_url);
+        let prepared = prepare_model_input(messages);
         let mut trace = CallTrace {
             api_url: url.clone(),
             protocol: "openai".to_string(),
             model: config.model.clone(),
             stream: false,
+            tool_chain_report: Some(prepared.tool_chain_report.clone()),
             ..Default::default()
         };
 
@@ -33,7 +35,7 @@ impl ProviderAdapter for OpenAIAdapter {
         if !system.is_empty() {
             msgs.push(serde_json::json!({"role": "system", "content": system}));
         }
-        msgs.extend(convert_for_openai(messages));
+        msgs.extend(convert_for_openai(&prepared));
 
         let mut body = serde_json::json!({
             "model": config.model,
@@ -88,11 +90,13 @@ impl ProviderAdapter for OpenAIAdapter {
     ) -> Result<(Response, CallTrace), String> {
         let start = Instant::now();
         let url = build_url(&config.base_url);
+        let prepared = prepare_model_input(messages);
         let mut trace = CallTrace {
             api_url: url.clone(),
             protocol: "openai".to_string(),
             model: config.model.clone(),
             stream: true,
+            tool_chain_report: Some(prepared.tool_chain_report.clone()),
             ..Default::default()
         };
 
@@ -100,7 +104,7 @@ impl ProviderAdapter for OpenAIAdapter {
         if !system.is_empty() {
             msgs.push(serde_json::json!({"role": "system", "content": system}));
         }
-        msgs.extend(convert_for_openai(messages));
+        msgs.extend(convert_for_openai(&prepared));
 
         let mut body = serde_json::json!({
             "model": config.model,

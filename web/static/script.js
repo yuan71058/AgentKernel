@@ -28,6 +28,8 @@ createApp({
     const runtimeRuns = ref([]);
     const runtimeRuntimeStatus = ref('');
     const runtimeLoading = ref(false);
+    const latestToolChainReport = ref(null);
+    const latestTraceDetails = ref([]);
 
     const chatBody = ref(null);
     const streamBody = ref(null);
@@ -55,6 +57,8 @@ createApp({
 
     const showPresetToolsModal = ref(false);
     const showApiKey = ref(false);
+
+    const askUserQuestionState = ref(null);
 
     // 流式文本累积
     const streamingText = ref('');
@@ -168,6 +172,32 @@ createApp({
           } catch(e) { return { ok: false, result: e.message }; }
         }
       },
+      {
+        name: 'AskUserQuestion',
+        description: '向用户提问并等待用户回答（阻塞交互）。用于需要用户决策或补充信息的场景。',
+        schema: {
+          type: 'object',
+          properties: {
+            question: { type: 'string', description: '要向用户提出的问题' },
+            options: { type: 'array', items: { type: 'string' }, description: '可选的回答选项列表。若提供则显示为单选按钮，若不提供则显示文本输入框。' }
+          },
+          required: ['question']
+        },
+        tags: ['builtin', 'interactive'],
+        execute(input) {
+          return new Promise((resolve) => {
+            askUserQuestionState.value = {
+              question: input.question || '（未提供问题）',
+              options: input.options || [],
+              answer: '',
+              resolve: (answer) => {
+                askUserQuestionState.value = null;
+                resolve({ ok: true, result: String(answer) });
+              }
+            };
+          });
+        }
+      },
     ];
 
     // 工具注册表（name → tool 定义）
@@ -266,6 +296,23 @@ createApp({
       return `${timeoutMs}ms`;
     }
 
+    function formatToolChainIds(ids) {
+      return Array.isArray(ids) && ids.length ? ids.join(', ') : '—';
+    }
+
+    function toolChainIssueCount(report) {
+      if (!report) return 0;
+      return (report.dropped_incomplete_tool_call_ids?.length || 0) + (report.dropped_orphan_tool_result_ids?.length || 0);
+    }
+
+    function toolChainStatusText(report) {
+      if (!report) return '暂无诊断';
+      const issues = toolChainIssueCount(report);
+      if (issues > 0) return `发现 ${issues} 个对齐问题`;
+      if ((report.complete_tool_call_ids?.length || 0) > 0) return '工具链完整';
+      return '本轮没有工具链问题';
+    }
+
     function getPendingMeta(requestId) {
       const meta = pendingCommands.get(requestId);
       if (!meta) return { command: '', sessionId: '' };
@@ -279,6 +326,10 @@ createApp({
     function isCurrentSession(targetSessionId) {
       if (!targetSessionId) return true;
       return targetSessionId === sessionId.value;
+    }
+
+    function isTerminalRunStatus(status) {
+      return ['idle', 'completed', 'cancelled', 'failed'].includes(status);
     }
 
     function appendAssistantMessage(text, meta = now()) {
@@ -323,6 +374,8 @@ createApp({
         runtimeRuns.value = [];
         runtimeRuntimeStatus.value = '';
         runtimeLoading.value = false;
+        latestToolChainReport.value = null;
+        latestTraceDetails.value = [];
         addLocalNotice('WS', '连接断开');
         if (autoReconnect.value) scheduleReconnect();
       };
@@ -357,16 +410,23 @@ createApp({
           // 先刷入正在流式显示的文本（防止 model.completed 还没到时 response 先到导致丢失）
           flushStreaming();
 
+          const pendingMeta = getPendingMeta(msg.request_id);
+          const respCmd = pendingMeta.command;
+          const respSessionId = msg.payload?.session_id || pendingMeta.sessionId || '';
+
           if (!msg.success) {
             addLocalNotice('命令失败', `[${msg.request_id}] ${msg.payload?.error || '未知错误'}`);
+            if (respCmd === 'session.send' && isCurrentSession(respSessionId)) {
+              currentRunStatus.value = 'failed';
+              streamingText.value = '';
+              streamingThinking.value = '';
+              isStreaming.value = false;
+              loadRuntimeSessions();
+            }
           }
 
           // session.send 的响应不再 push 到聊天（assistant 消息已通过 model.completed 显示）
           // 其他 command 的响应照常显示为 system 消息
-
-          const pendingMeta = getPendingMeta(msg.request_id);
-          const respCmd = pendingMeta.command;
-          const respSessionId = msg.payload?.session_id || pendingMeta.sessionId || '';
 
           // provider.get 响应 → 回填配置表单
           if (msg.success && msg.request_id.startsWith('r') && msg.payload?.provider && isCurrentSession(respSessionId)) {
@@ -451,6 +511,29 @@ createApp({
             runtimeSessions.value = Array.isArray(msg.payload?.sessions) ? msg.payload.sessions : [];
             runtimeRuns.value = Array.isArray(msg.payload?.runs) ? msg.payload.runs : [];
             runtimeRuntimeStatus.value = `已刷新 ${now()}`;
+
+            const activeTrackedRun = currentRunId.value
+              ? runtimeRuns.value.find(r => r.run_id === currentRunId.value)
+              : null;
+            const fallbackSessionRun = !currentRunId.value
+              ? runtimeRuns.value.find(r => r.session_id === sessionId.value)
+              : null;
+
+            if (activeTrackedRun) {
+              if (activeTrackedRun.status === 'cancelling') {
+                currentRunStatus.value = 'cancelling';
+              } else if (isTerminalRunStatus(currentRunStatus.value)) {
+                currentRunStatus.value = activeTrackedRun.status;
+              }
+            } else if (fallbackSessionRun) {
+              currentRunId.value = fallbackSessionRun.run_id;
+              currentRunStatus.value = fallbackSessionRun.status;
+            } else {
+              if (['pending', 'running', 'streaming', 'cancelling'].includes(currentRunStatus.value)) {
+                currentRunStatus.value = 'idle';
+                currentRunId.value = '';
+              }
+            }
           }
 
           // tool.register / unregister 响应后刷新 session 工具配置
@@ -463,11 +546,42 @@ createApp({
             sessions.value = msg.payload.sessions.filter(item => item && typeof item === 'object' && item.session_id);
             selectedSessionId.value = sessionId.value;
           }
+          if (msg.success && respCmd === 'session.delete') {
+            const deletedSessionId = msg.payload?.session_id || respSessionId;
+            const remainingSessions = sessions.value.filter(item => item.session_id !== deletedSessionId);
+            sessions.value = remainingSessions;
+            selectedSessionId.value = deletedSessionId === sessionId.value
+              ? (remainingSessions[0]?.session_id || '')
+              : sessionId.value;
+            if (deletedSessionId === sessionId.value) {
+              if (remainingSessions.length > 0) {
+                selectSession(remainingSessions[0].session_id);
+                addLocalNotice('会话', `已删除 session: ${deletedSessionId}，已切换到 ${remainingSessions[0].session_id}`);
+              } else {
+                const newId = 'session_' + Math.random().toString(36).substring(2, 8);
+                sessionId.value = newId;
+                selectedSessionId.value = newId;
+                resetSessionViewState();
+                sessions.value = [{ session_id: newId, title: '新会话', message_count: 0 }];
+                addLocalNotice('会话', `已删除 session: ${deletedSessionId}，已切换到新会话: ${newId}`);
+              }
+            } else {
+              addLocalNotice('会话', `已删除 session: ${deletedSessionId}`);
+            }
+            loadSessions();
+          }
 
           // session.send 响应 → 如果 model.completed 还没来，用 response payload 兜底显示
           if (msg.success && respCmd === 'session.send' && msg.payload?.run_id && isCurrentSession(respSessionId)) {
             currentRunId.value = msg.payload.run_id;
             currentRunStatus.value = msg.payload.status || currentRunStatus.value;
+          }
+          if (Array.isArray(msg.payload?.trace_details) && isCurrentSession(respSessionId)) {
+            latestTraceDetails.value = msg.payload.trace_details;
+            const latestTrace = msg.payload.trace_details[msg.payload.trace_details.length - 1];
+            if (latestTrace?.tool_chain_report) {
+              latestToolChainReport.value = latestTrace.tool_chain_report;
+            }
           }
           if (msg.success && msg.payload?.status === 'cancelled' && isCurrentSession(respSessionId)) {
             currentRunStatus.value = 'cancelled';
@@ -580,15 +694,7 @@ createApp({
       addRawMessage('out', out);
     }
 
-    function createNewSession() {
-      const newId = 'session_' + Math.random().toString(36).substring(2, 8);
-      sessions.value.unshift({ session_id: newId, title: '新会话', message_count: 0 });
-      selectSession(newId);
-    }
-
-    function selectSession(id) {
-      if (!id || id === sessionId.value) return;
-      sessionId.value = id;
+    function resetSessionViewState() {
       chatMessages.value = [];
       streamingText.value = '';
       isStreaming.value = false;
@@ -606,6 +712,34 @@ createApp({
       runtimeRuns.value = [];
       runtimeRuntimeStatus.value = '';
       runtimeLoading.value = false;
+      latestToolChainReport.value = null;
+      latestTraceDetails.value = [];
+    }
+
+    function createNewSession() {
+      const newId = 'session_' + Math.random().toString(36).substring(2, 8);
+      sessions.value.unshift({ session_id: newId, title: '新会话', message_count: 0 });
+      selectSession(newId);
+    }
+
+    function deleteSession(id) {
+      if (!ws || !id) return;
+      if (runtimeSessions.value.includes(id)) {
+        addLocalNotice('会话', `session ${id} 当前仍有运行中的任务，暂不允许删除`);
+        return;
+      }
+      const target = sessions.value.find(s => s.session_id === id);
+      const title = target?.title || id;
+      if (!window.confirm(`确认删除 session "${title}" 吗？\n\n注意：这会移除该 session 索引与当前上下文视图。`)) {
+        return;
+      }
+      sendCommand('session.delete', {}, id);
+    }
+
+    function selectSession(id) {
+      if (!id || id === sessionId.value) return;
+      sessionId.value = id;
+      resetSessionViewState();
       loadSessionHistory();
       loadProvider();
       loadSystemPrompt();
@@ -870,7 +1004,23 @@ createApp({
       }
     }
 
-    async function handleToolCallRequest(payload, eventSessionId) {
+    // 工具队列管理，用于确保带有阻塞的工具按顺序执行
+    const toolCallQueue = [];
+    let isProcessingToolCall = false;
+
+    async function processNextToolCall() {
+      if (isProcessingToolCall || toolCallQueue.length === 0) return;
+      isProcessingToolCall = true;
+      const { payload, eventSessionId } = toolCallQueue.shift();
+      try {
+        await executeToolCall(payload, eventSessionId);
+      } finally {
+        isProcessingToolCall = false;
+        processNextToolCall();
+      }
+    }
+
+    async function executeToolCall(payload, eventSessionId) {
       const { tool_name, call_id, input } = payload || {};
       const safeInput = input || {};
       const tool = toolRegistry.get(tool_name);
@@ -920,12 +1070,19 @@ createApp({
       sendToolResult(call_id, execResult.result, !execResult.ok, eventSessionId || sessionId.value);
     }
 
+    async function handleToolCallRequest(payload, eventSessionId) {
+      toolCallQueue.push({ payload, eventSessionId });
+      processNextToolCall();
+    }
+
     function handleEvent(type, payload, envelope = {}) {
       const eventSessionId = envelope.session_id || payload?.session_id || '';
+      const eventRunId = envelope.run_id || payload?.run_id || '';
       const belongsToCurrentSession = isCurrentSession(eventSessionId);
-      if (belongsToCurrentSession && envelope.run_id) {
-        currentRunId.value = envelope.run_id;
+      if (belongsToCurrentSession && type === 'run.started' && eventRunId && (!currentRunId.value || currentRunStatus.value === 'pending')) {
+        currentRunId.value = eventRunId;
       }
+      const belongsToTrackedRun = !eventRunId || !currentRunId.value || eventRunId === currentRunId.value;
       // tool.call.request → 统一工具调用入口；业务端只需要注册工具 execute(input, ctx)
       if (type === 'tool.call.request') {
         handleToolCallRequest(payload, eventSessionId);
@@ -938,13 +1095,22 @@ createApp({
         return;
       }
       if (type === 'run.started') {
+        if (!belongsToTrackedRun) {
+          loadRuntimeSessions();
+          return;
+        }
         currentRunStatus.value = 'running';
         streamingThinking.value = '';
         loadRuntimeSessions();
         return;
       }
+      if (type === 'tool_chain.diagnosed') {
+        latestToolChainReport.value = payload.report || null;
+        return;
+      }
       // model.delta → 实时累积流式文本
       if (type === 'model.delta' && payload.delta) {
+        if (!belongsToTrackedRun) return;
         if (payload.event_type === 'thinking') {
           streamingThinking.value += payload.delta;
         } else {
@@ -956,6 +1122,7 @@ createApp({
       }
       // model.completed → 最终确认（不用 setTimeout，避免与 response 到达产生竞争）
       if (type === 'model.completed' && payload.content) {
+        if (!belongsToTrackedRun) return;
         // 用最终 content 确保完整
         if (payload.content) {
           streamingText.value = payload.content;
@@ -970,12 +1137,20 @@ createApp({
         return;
       }
       if (type === 'run.completed') {
+        if (!belongsToTrackedRun) {
+          loadRuntimeSessions();
+          return;
+        }
         currentRunStatus.value = 'completed';
         loadRuntimeSessions();
         scrollToChat();
         return;
       }
       if (type === 'run.cancelled') {
+        if (!belongsToTrackedRun) {
+          loadRuntimeSessions();
+          return;
+        }
         const partialContent = payload.partial_content || streamingText.value || '';
         if (partialContent) {
           appendAssistantMessage(
@@ -992,6 +1167,10 @@ createApp({
         return;
       }
       if (type === 'error') {
+        if (!belongsToTrackedRun) {
+          loadRuntimeSessions();
+          return;
+        }
         currentRunStatus.value = 'failed';
         loadRuntimeSessions();
       }
@@ -1007,6 +1186,7 @@ createApp({
       const map = {
         'model.delta': '模型流式增量',
         'model.completed': '模型完成',
+        'tool_chain.diagnosed': '工具链诊断',
         'session.created': '会话创建',
         'session.closed': '会话关闭',
         'run.started': '推理开始',
@@ -1035,6 +1215,8 @@ createApp({
       switch(type) {
         case 'model.delta': return `${p.event_type === 'thinking' ? '思维' : '文本'}增量 ${tag(JSON.stringify(p.delta || '').slice(0, 48))}`;
         case 'model.completed': return `内容 ${tag(text(p.content, 80))}`;
+        case 'tool_chain.diagnosed':
+          return `${tag(toolChainStatusText(p.report))} 完整 ${tag((p.report?.complete_tool_call_ids || []).length)} 丢弃 ${tag(toolChainIssueCount(p.report))}`;
         case 'tool.call.request': return `${tag(p.tool_name)} 输入 ${tag(JSON.stringify(p.input || {}).slice(0, 64))}`;
         case 'tool.call.result': return `${tag(p.tool_name)} ${p.is_error ? tag('失败','err') : tag('成功')} 结果 ${text(p.result, 56)}`;
         case 'tool.call.error': return `${tag(p.tool_name)} ${tag(text(p.error, 64), 'err')}`;
@@ -1060,6 +1242,7 @@ createApp({
       if (type === 'error') return 'error';
       if (type.startsWith('model.')) return 'model';
       if (type.startsWith('run.')) return 'run';
+      if (type.startsWith('tool_chain.')) return 'tool';
       if (type.startsWith('tool.')) return 'tool';
       if (type.startsWith('session.')) return 'session';
       if (type.startsWith('context.')) return 'context';
@@ -1143,7 +1326,7 @@ createApp({
           const cls = msg.success ? '' : 'err';
           const p = msg.payload || {};
           // 根据 request_id 查找对应的命令类型
-          const cmd = pendingCommands.get(msg.request_id) || '';
+          const cmd = getPendingMeta(msg.request_id).command || '';
           const cmdLabels = {
             'provider.update': '更新供应商响应',
             'provider.get': '获取供应商响应',
@@ -1171,7 +1354,13 @@ createApp({
             'context.compaction.apply': '压缩执行响应',
             'run.cancel': '取消推理响应',
           };
-          const respLabel = cmdLabels[cmd] || '命令响应';
+          let respLabel = cmdLabels[cmd] || '命令响应';
+          if (cmd === 'session.send') {
+            if (!msg.success) respLabel = '推理失败';
+            else if (p.status === 'cancelled') respLabel = '推理中断';
+            else if (p.status === 'completed') respLabel = '推理完成';
+            else respLabel = '发送消息响应';
+          }
           let brief = `${tag(msg.request_id)} ${tag(status, cls)}`;
           // 按命令类型提取关键信息
           if (p.provider) {
@@ -1181,6 +1370,16 @@ createApp({
             if (p.is_override !== undefined) brief += ` ${tag(p.is_override?'会话覆盖':'全局默认')}`;
           }
           if (p.messages) brief += ` 加载 ${p.messages.length} 条历史`;
+          if (cmd === 'session.send') {
+            if (p.run_id) brief += ` run ${tag((p.run_id || '').slice(0, 16))}`;
+            if (p.status) brief += ` ${tag(p.status, p.status === 'cancelled' ? 'err' : '')}`;
+            if (Array.isArray(p.trace_details) && p.trace_details.length) {
+              const lastTrace = p.trace_details[p.trace_details.length - 1];
+              const report = lastTrace?.tool_chain_report;
+              brief += ` trace ${tag(p.trace_details.length)}`;
+              if (report) brief += ` ${tag(toolChainStatusText(report), toolChainIssueCount(report) > 0 ? 'err' : '')}`;
+            }
+          }
           if (cmd === 'runtime.sessions') brief += ` session ${tag(p.running_session_count ?? 0)} run ${tag(p.running_run_count ?? 0)}`;
           if (p.active_context) {
             brief += ` ${tag(contextModeLabel(p.active_context.mode))}`;
@@ -1202,6 +1401,7 @@ createApp({
           const map = {
             'model.delta':              () => ({ label: p.event_type === 'thinking' ? '模型思维（流式）' : '模型输出（流式）', brief: `${p.event_type === 'thinking' ? '思维' : '文本'}增量 ${tag(JSON.stringify(p.delta||'').slice(0,40))}` }),
             'model.completed':          () => ({ label: '模型完成', brief: `${tag((p.content||'').slice(0,60))}` }),
+            'tool_chain.diagnosed':     () => ({ label: '工具链诊断', brief: `${tag(toolChainStatusText(p.report), toolChainIssueCount(p.report) > 0 ? 'err' : '')} 完整 ${tag((p.report?.complete_tool_call_ids||[]).length)} 丢弃 ${tag(toolChainIssueCount(p.report))}` }),
             'session.created':          () => ({ label: '会话创建', brief: `标题 ${tag(p.title||'—')}` }),
             'session.closed':           () => ({ label: '会话关闭', brief: p.reason ? `原因 ${tag(p.reason)}` : '' }),
             'run.started':              () => ({ label: '推理开始', brief: `${tag(p.provider)} ${tag(p.model)}` }),
@@ -1403,9 +1603,10 @@ createApp({
       contextSeedKind, contextSeedContent, contextSummary,
       streamingText, isStreaming, currentRunId, currentRunStatus, runStatusLabel, autoReconnect,
       streamingThinking,
+      latestToolChainReport, latestTraceDetails, formatToolChainIds, toolChainStatusText, toolChainIssueCount,
       connect, disconnect, sendChat, cancelCurrentRun, sendRaw, sendToolResult,
       defineClientTool, handleToolCallRequest,
-      loadSessions, selectSession, createNewSession,
+      loadSessions, selectSession, createNewSession, deleteSession,
       registerPresetTool, registerPresetTools,
       saveProvider, loadProvider, applyTemplate,
       saveSystemPrompt, loadSystemPrompt, loadTools,
@@ -1415,7 +1616,7 @@ createApp({
       contextCommandName, contextModeLabel, seedKindLabel,
       loadFullMessages, onFullMessagesScroll, roleLabel, roleColor, formatMessageTime,
       filteredEvents, filteredRaw, statsExpanded, showPresetToolsModal, renderMarkdown,
-      showApiKey, formatTimeoutLabel,
+      showApiKey, formatTimeoutLabel, askUserQuestionState,
     };
   }
 }).mount('#app');

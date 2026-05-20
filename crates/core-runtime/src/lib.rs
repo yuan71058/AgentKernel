@@ -7,7 +7,7 @@
 //! use core_runtime::AgentKernel;
 //! use core_protocol::*;
 //!
-//! # async fn example() -> Result<(), String> {
+//! # async fn example() -> Result<(), core_runtime::RuntimeErrorReport> {
 //! let kernel = AgentKernel::new(ProviderConfig {
 //!     protocol: Protocol::OpenAI,
 //!     base_url: "https://api.deepseek.com".into(),
@@ -18,8 +18,16 @@
 //!
 //! // 注册工具
 //! kernel.register_tool(
+//!     "",
 //!     Tool { name: "calc".into(), description: "计算器".into(), input_schema: serde_json::json!({}) },
-//!     ToolRegistration { tool_name: "calc".into(), client_id: "local".into(), .. },
+//!     ToolRegistration {
+//!         tool_name: "calc".into(),
+//!         description: "计算器".into(),
+//!         client_id: "local".into(),
+//!         permissions: vec![],
+//!         timeout_ms: 0,
+//!         tags: vec![],
+//!     },
 //! );
 //!
 //! // 对话
@@ -32,7 +40,7 @@
 use core_context::ContextManager;
 use core_events::EventBus;
 use core_events::event_types::*;
-use core_model::{Router, CallTrace, should_retry};
+use core_model::{Router, CallTrace, analyze_tool_chain, should_retry};
 use core_protocol::*;
 use core_session::SessionManager;
 use core_storage::{Storage, MemoryStorage};
@@ -565,6 +573,14 @@ impl AgentKernel {
             let active_config_owned = active_config.clone();
             let system_prompt_owned = system_prompt.clone();
             let model_input = self.context_mgr.build_model_input(&opts.session_id);
+            let tool_chain_report = analyze_tool_chain(&model_input);
+            self.event_bus.emit(
+                EventEnvelope::new(TOOL_CHAIN_DIAGNOSED, &opts.session_id)
+                    .with_run_id(&opts.run_id)
+                    .with_payload(serde_json::json!({
+                        "report": tool_chain_report,
+                    })),
+            );
             let tools_for_round = active_tools.clone();
             let adapter_for_round = adapter.clone();
             let stream_task = tokio::spawn(async move {

@@ -125,8 +125,46 @@
             </div>
 
             <div class="config-section">
+              <div class="config-title">
+                最近工具链诊断
+                <span>发送给 provider 之前的工具链对齐检查与规范化摘要</span>
+              </div>
+              <div class="stats-panel" style="margin-top:12px">
+                <div class="stat-row"><span class="stat-label">诊断状态</span><span class="stat-value" :style="{color: toolChainIssueCount(latestToolChainReport) > 0 ? 'var(--orange)' : 'var(--green)'}">{{ toolChainStatusText(latestToolChainReport) }}</span></div>
+                <div class="stat-row"><span class="stat-label">原始消息数</span><span class="stat-value">{{ latestToolChainReport?.original_message_count ?? '—' }}</span></div>
+                <div class="stat-row"><span class="stat-label">规范化后消息数</span><span class="stat-value">{{ latestToolChainReport?.sanitized_message_count ?? '—' }}</span></div>
+                <div class="stat-row"><span class="stat-label">完整 Tool Calls</span><span class="stat-value" style="font-size:11px;font-family:ui-monospace,monospace">{{ formatToolChainIds(latestToolChainReport?.complete_tool_call_ids) }}</span></div>
+                <div class="stat-row"><span class="stat-label">丢弃未闭合 Calls</span><span class="stat-value" style="font-size:11px;font-family:ui-monospace,monospace;color:var(--orange)">{{ formatToolChainIds(latestToolChainReport?.dropped_incomplete_tool_call_ids) }}</span></div>
+                <div class="stat-row"><span class="stat-label">丢弃孤立 Results</span><span class="stat-value" style="font-size:11px;font-family:ui-monospace,monospace;color:var(--orange)">{{ formatToolChainIds(latestToolChainReport?.dropped_orphan_tool_result_ids) }}</span></div>
+                <div class="stat-row"><span class="stat-label">最近 Trace 数</span><span class="stat-value">{{ latestTraceDetails.length }}</span></div>
+              </div>
+              <template v-if="latestTraceDetails.length > 0">
+                <template v-for="(trace, idx) in [...latestTraceDetails].reverse()" :key="'trace-'+idx">
+                  <div class="tool-card" style="padding:12px 16px">
+                    <div style="display:flex;align-items:center;gap:10px;justify-content:space-between">
+                      <div style="display:flex;align-items:center;gap:8px;min-width:0">
+                        <span class="tool-name" style="font-size:13px">{{ trace.protocol || 'unknown' }}</span>
+                        <span class="tool-tag">{{ trace.model || '—' }}</span>
+                        <span class="tool-tag" :style="{color: toolChainIssueCount(trace.tool_chain_report) > 0 ? 'var(--orange)' : 'var(--green)'}">{{ toolChainStatusText(trace.tool_chain_report) }}</span>
+                      </div>
+                      <span style="font-size:11px;color:var(--text3)">{{ trace.duration_ms || 0 }}ms</span>
+                    </div>
+                    <div class="tool-meta" style="margin-top:8px;padding-top:8px">
+                      <span>finish: {{ trace.finish_reason || '—' }}</span>
+                      <span>input: {{ trace.input_tokens || 0 }}</span>
+                      <span>output: {{ trace.output_tokens || 0 }}</span>
+                      <span>stream: {{ trace.stream ? 'true' : 'false' }}</span>
+                    </div>
+                  </div>
+                </template>
+              </template>
+              <div class="config-hint" v-else>尚未收到本 session 的工具链诊断结果。</div>
+            </div>
+
+            <div class="config-section">
               <div class="config-title">面板作用说明</div>
               <div class="config-hint">事件流只展示 Core 主动推送的运行时事件，例如 `run.started`、`model.delta`、`tool.call.request`、`run.cancelled`。</div>
+              <div class="config-hint">工具链诊断会在真正请求 provider 前发出 `tool_chain.diagnosed`，用于说明本轮消息是否存在未闭合工具链、孤立工具结果与规范化后的消息数量。</div>
               <div class="config-hint">通讯日志展示 WS 收发原文，适合核对命令、响应和事件是否真实到达。</div>
               <div class="config-hint">全部历史对话展示 session 下已经落盘的全量消息，不等同于当前轮可见上下文。</div>
               <div class="config-hint">停止生成会发送 `run.cancel`，如果模型已输出部分内容，Core 会尽量保留并通过 `run.cancelled` 告知前端。</div>
@@ -514,7 +552,21 @@
           </div>
           <div class="session-list">
             <div class="session-item" v-for="s in sessions" :key="s.session_id" :class="{active: s.session_id === sessionId}" @click="selectSession(s.session_id)">
-              <div class="session-item-title">{{ s.title || s.session_id }}</div>
+              <div class="session-item-title" style="display:flex;align-items:center;gap:6px;justify-content:space-between">
+                <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                  {{ s.title || s.session_id }}
+                  <span v-if="runtimeSessions.includes(s.session_id)" class="tool-tag" style="color:var(--orange); border-color:var(--orange); font-size:10px; padding:0 4px; margin-left:6px; vertical-align:middle; background:transparent;">处理中</span>
+                </span>
+                <button
+                  class="btn"
+                  @click.stop="deleteSession(s.session_id)"
+                  :disabled="!connected || runtimeSessions.includes(s.session_id)"
+                  style="padding:2px 6px;font-size:10px;line-height:1.2"
+                  title="删除当前 session"
+                >
+                  删
+                </button>
+              </div>
               <div class="session-item-meta">
                 <span style="font-family:ui-monospace,monospace">{{ (s.session_id).slice(0,8) }}</span>
                 <span>{{ s.message_count || 0 }} 条</span>
@@ -620,6 +672,36 @@
                 <button class="btn" @click="registerPresetTool(t)" :disabled="!connected" style="margin-left:auto;padding:4px 12px;font-size:11px">注册</button>
               </div>
               <div class="tool-desc">{{ t.description }}</div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- AskUserQuestion Modal -->
+    <div class="modal-overlay" v-if="askUserQuestionState" style="z-index: 2000; background: rgba(0,0,0,0.6);">
+      <div class="modal-content" @click.stop style="max-width: 400px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); border: 1px solid var(--border);">
+        <div class="modal-header">
+          <div style="display:flex;align-items:center;gap:8px">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+            需要您的回复
+          </div>
+        </div>
+        <div class="modal-body" style="padding: 20px;">
+          <div style="font-size: 14px; margin-bottom: 20px; line-height: 1.5; color: var(--text);">
+            {{ askUserQuestionState.question }}
+          </div>
+          <template v-if="askUserQuestionState.options && askUserQuestionState.options.length > 0">
+            <div style="display:flex;flex-direction:column;gap:10px">
+              <button v-for="opt in askUserQuestionState.options" :key="opt" class="btn btn-connect" @click="askUserQuestionState.resolve(opt)" style="padding: 10px 16px; text-align: left; font-size: 13px;">
+                {{ opt }}
+              </button>
+            </div>
+          </template>
+          <template v-else>
+            <input v-model="askUserQuestionState.answer" placeholder="请输入您的回答..." class="config-input" style="margin-bottom: 16px; padding: 10px; font-size: 13px;" @keyup.enter="askUserQuestionState.resolve(askUserQuestionState.answer || '')">
+            <div style="display:flex;justify-content:flex-end;gap:8px">
+              <button class="btn btn-connect" @click="askUserQuestionState.resolve(askUserQuestionState.answer || '')" style="padding: 8px 16px;">提交回答</button>
             </div>
           </template>
         </div>

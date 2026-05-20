@@ -1,7 +1,8 @@
 //! # Core Model
 //!
 //! 供应商抽象层。支持 Claude / OpenAI 兼容协议。
-//! 关键：Claude 适配器过滤 assistant 消息中的 tool_use 块（ai.accbot.vip 兼容）。
+//! 关键：协议共享一套工具链规范化逻辑，避免不同 provider 因 tool_use/tool_result
+//! 链路不完整而出现格式错误。
 
 pub mod claude;
 pub mod openai;
@@ -9,6 +10,7 @@ pub mod trace;
 
 use async_trait::async_trait;
 use core_protocol::*;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 use tracing::info;
 
@@ -56,6 +58,24 @@ pub struct CallTrace {
     pub error: Option<String>,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_chain_report: Option<ToolChainReport>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ToolChainReport {
+    pub original_message_count: usize,
+    pub sanitized_message_count: usize,
+    pub complete_tool_call_ids: Vec<String>,
+    pub dropped_incomplete_tool_call_ids: Vec<String>,
+    pub dropped_orphan_tool_result_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedModelInput {
+    pub original_messages: Vec<Message>,
+    pub sanitized_messages: Vec<Message>,
+    pub tool_chain_report: ToolChainReport,
 }
 
 /// 供应商路由器
@@ -88,44 +108,127 @@ impl Default for Router {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  消息规范化（Claude 适配器关键：过滤 tool_use）
+//  消息规范化（协议共享）
 // ═══════════════════════════════════════════════════════════════
 
-/// 过滤 assistant 消息中不能回传的内容块。
-///
-/// **关键**：ai.accbot.vip 不接受 assistant 消息中的 tool_use 块（返回 400）。
-/// 只保留 text 块，过滤 tool_use / thinking / redacted_thinking。
-/// tool_result 在 user 消息中保留，模型能从 tool_result 推断之前的调用。
-pub fn normalize_for_claude(messages: &[Message]) -> Vec<Message> {
-    messages.iter().map(|msg| {
-        let content: Vec<ContentBlock> = msg.content.iter().filter_map(|c| {
-            match c {
-                ContentBlock::Text { text, .. } => Some(ContentBlock::text(text)),
-                ContentBlock::ToolResult { tool_use_id, content, is_error } => {
-                    Some(ContentBlock::ToolResult {
-                        tool_use_id: tool_use_id.clone(),
-                        content: content.clone(),
-                        is_error: *is_error,
-                    })
+/// 协议无关的工具链规范化：
+/// - 丢弃没有前置 tool_use 的孤立 tool_result
+/// - 丢弃没有完整 tool_result 闭环的 assistant tool_use
+/// - 保留普通文本/图片等业务内容
+pub fn prepare_model_input(messages: &[Message]) -> PreparedModelInput {
+    let report = analyze_tool_chain(messages);
+    let sanitized_messages = sanitize_tool_chain_messages(messages, &report);
+    PreparedModelInput {
+        original_messages: messages.to_vec(),
+        sanitized_messages,
+        tool_chain_report: report,
+    }
+}
+
+pub fn analyze_tool_chain(messages: &[Message]) -> ToolChainReport {
+    let mut complete_tool_call_ids = BTreeSet::new();
+    let mut dropped_incomplete_tool_call_ids = BTreeSet::new();
+    let mut dropped_orphan_tool_result_ids = BTreeSet::new();
+
+    for (idx, msg) in messages.iter().enumerate() {
+        match msg.role {
+            Role::Assistant => {
+                let tool_call_ids = assistant_tool_call_ids(Some(msg));
+                if tool_call_ids.is_empty() {
+                    continue;
                 }
-                ContentBlock::Image { source } => Some(ContentBlock::Image { source: source.clone() }),
-                // 关键：过滤 tool_use（assistant 消息中）
-                ContentBlock::ToolUse { .. } => None,
-                // 过滤 thinking
-                ContentBlock::Thinking { .. } => None,
+
+                if assistant_tool_calls_are_complete(messages, idx) {
+                    complete_tool_call_ids.extend(tool_call_ids);
+                } else {
+                    dropped_incomplete_tool_call_ids.extend(tool_call_ids);
+                }
+            }
+            Role::User => {
+                for block in &msg.content {
+                    if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                        if !tool_result_has_matching_call(messages, idx, tool_use_id) {
+                            dropped_orphan_tool_result_ids.insert(tool_use_id.clone());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut report = ToolChainReport {
+        original_message_count: messages.len(),
+        sanitized_message_count: 0,
+        complete_tool_call_ids: complete_tool_call_ids.into_iter().collect(),
+        dropped_incomplete_tool_call_ids: dropped_incomplete_tool_call_ids.into_iter().collect(),
+        dropped_orphan_tool_result_ids: dropped_orphan_tool_result_ids.into_iter().collect(),
+    };
+
+    report.sanitized_message_count = sanitize_tool_chain_messages(messages, &report).len();
+    report
+}
+
+pub fn sanitize_tool_chain_messages(messages: &[Message], report: &ToolChainReport) -> Vec<Message> {
+    let mut sanitized = Vec::new();
+    let complete_ids: HashSet<&str> = report.complete_tool_call_ids.iter().map(String::as_str).collect();
+
+    for msg in messages {
+        let content: Vec<ContentBlock> = msg.content.iter().filter_map(|c| {
+            if let ContentBlock::ToolUse { id, .. } = c {
+                if complete_ids.contains(id.as_str()) {
+                    Some(c.clone())
+                } else {
+                    None
+                }
+            } else if let ContentBlock::ToolResult { tool_use_id, .. } = c {
+                if complete_ids.contains(tool_use_id.as_str()) {
+                    Some(c.clone())
+                } else {
+                    None
+                }
+            } else {
+                Some(c.clone())
             }
         }).collect();
-        Message {
+
+        if content.is_empty() {
+            continue;
+        }
+
+        sanitized.push(Message {
             content,
             ..msg.clone()
+        });
+    }
+
+    sanitized
+}
+
+/// Claude 协议发送前规范化：
+/// - 先走共享的工具链规范化
+/// - 再过滤 Claude 不需要回传的思维块
+pub fn normalize_for_claude(input: &PreparedModelInput) -> Vec<Message> {
+    input.sanitized_messages.clone().into_iter().map(|msg| {
+        let content: Vec<ContentBlock> = msg.content.iter().filter_map(|c| {
+            match c {
+                ContentBlock::Thinking { .. } => None,
+                _ => Some(c.clone()),
+            }
+        }).collect();
+
+        Message {
+            content,
+            ..msg
         }
-    }).collect()
+    }).filter(|msg| !msg.content.is_empty()).collect()
 }
 
 /// OpenAI 适配器的消息转换（tool_use → tool_calls，tool_result → role:"tool"）
-pub fn convert_for_openai(messages: &[Message]) -> Vec<serde_json::Value> {
+pub fn convert_for_openai(input: &PreparedModelInput) -> Vec<serde_json::Value> {
     let mut result = Vec::new();
-    for msg in messages {
+
+    for msg in &input.sanitized_messages {
         match msg.role {
             Role::Assistant => {
                 let mut text_parts = Vec::new();
@@ -146,14 +249,17 @@ pub fn convert_for_openai(messages: &[Message]) -> Vec<serde_json::Value> {
                         _ => {}
                     }
                 }
-                let mut m = serde_json::json!({ "role": "assistant" });
-                if !text_parts.is_empty() {
-                    m["content"] = serde_json::Value::String(text_parts.join("\n"));
+
+                if !text_parts.is_empty() || !tool_calls.is_empty() {
+                    let mut m = serde_json::json!({ "role": "assistant" });
+                    if !text_parts.is_empty() {
+                        m["content"] = serde_json::Value::String(text_parts.join("\n"));
+                    }
+                    if !tool_calls.is_empty() {
+                        m["tool_calls"] = serde_json::Value::Array(tool_calls);
+                    }
+                    result.push(m);
                 }
-                if !tool_calls.is_empty() {
-                    m["tool_calls"] = serde_json::Value::Array(tool_calls);
-                }
-                result.push(m);
             }
             Role::User => {
                 let mut text_parts = Vec::new();
@@ -162,18 +268,20 @@ pub fn convert_for_openai(messages: &[Message]) -> Vec<serde_json::Value> {
                     match c {
                         ContentBlock::Text { text, .. } => text_parts.push(text.clone()),
                         ContentBlock::ToolResult { tool_use_id, content, .. } => {
-                            tool_results.push(serde_json::json!({
-                                "role": "tool",
-                                "tool_call_id": tool_use_id,
-                                "content": content.as_deref().unwrap_or("")
-                            }));
+                            tool_results.push((tool_use_id.clone(), content.clone().unwrap_or_default()));
                         }
                         _ => {}
                     }
                 }
-                for tr in tool_results {
-                    result.push(tr);
+
+                for (tool_use_id, content) in tool_results {
+                    result.push(serde_json::json!({
+                        "role": "tool",
+                        "tool_call_id": tool_use_id,
+                        "content": content
+                    }));
                 }
+
                 if !text_parts.is_empty() {
                     result.push(serde_json::json!({
                         "role": "user",
@@ -193,6 +301,218 @@ pub fn convert_for_openai(messages: &[Message]) -> Vec<serde_json::Value> {
         }
     }
     result
+}
+
+fn assistant_tool_calls_are_complete(messages: &[Message], assistant_index: usize) -> bool {
+    let tool_call_ids = assistant_tool_call_ids(messages.get(assistant_index));
+    if tool_call_ids.is_empty() {
+        return false;
+    }
+
+    let mut remaining = tool_call_ids;
+    for msg in messages.iter().skip(assistant_index + 1) {
+        match msg.role {
+            Role::User => {
+                let mut has_non_tool_content = false;
+                for block in &msg.content {
+                    match block {
+                        ContentBlock::ToolResult { tool_use_id, .. } => {
+                            remaining.remove(tool_use_id);
+                        }
+                        ContentBlock::Text { text, .. } if !text.is_empty() => {
+                            has_non_tool_content = true;
+                        }
+                        ContentBlock::Image { .. } | ContentBlock::Thinking { .. } | ContentBlock::ToolUse { .. } => {
+                            has_non_tool_content = true;
+                        }
+                        _ => {}
+                    }
+                }
+
+                if remaining.is_empty() {
+                    return true;
+                }
+
+                if has_non_tool_content {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+
+    false
+}
+
+fn tool_result_has_matching_call(messages: &[Message], user_index: usize, tool_use_id: &str) -> bool {
+    for idx in (0..user_index).rev() {
+        let Some(msg) = messages.get(idx) else {
+            continue;
+        };
+        match msg.role {
+            Role::Assistant => {
+                let tool_call_ids = assistant_tool_call_ids(Some(msg));
+                if tool_call_ids.contains(tool_use_id) {
+                    return assistant_tool_calls_are_complete(messages, idx);
+                }
+                if !tool_call_ids.is_empty() {
+                    return false;
+                }
+                if msg.content.iter().any(|block| matches!(block, ContentBlock::Text { text, .. } if !text.is_empty())) {
+                    return false;
+                }
+            }
+            Role::User => {
+                let has_non_tool_content = msg.content.iter().any(|block| {
+                    !matches!(block, ContentBlock::ToolResult { .. })
+                });
+                if has_non_tool_content {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+
+    false
+}
+
+fn assistant_tool_call_ids(message: Option<&Message>) -> HashSet<String> {
+    let Some(message) = message else {
+        return HashSet::new();
+    };
+    if message.role != Role::Assistant {
+        return HashSet::new();
+    }
+
+    message.content.iter().filter_map(|block| {
+        if let ContentBlock::ToolUse { id, .. } = block {
+            Some(id.clone())
+        } else {
+            None
+        }
+    }).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assistant_tool_message(session_id: &str, call_id: &str) -> Message {
+        Message::new(
+            session_id,
+            Role::Assistant,
+            vec![ContentBlock::tool_use(call_id, "AskUserQuestion", serde_json::json!({}))],
+        )
+    }
+
+    fn user_tool_result_message(session_id: &str, call_id: &str) -> Message {
+        Message::new(
+            session_id,
+            Role::User,
+            vec![ContentBlock::tool_result(call_id, "result", false)],
+        )
+    }
+
+    #[test]
+    fn sanitize_tool_chain_preserves_complete_chain() {
+        let session_id = "sess";
+        let messages = vec![
+            assistant_tool_message(session_id, "call_1"),
+            user_tool_result_message(session_id, "call_1"),
+        ];
+
+        let prepared = prepare_model_input(&messages);
+        let sanitized = prepared.sanitized_messages;
+
+        assert_eq!(sanitized.len(), 2);
+        assert!(matches!(sanitized[0].content[0], ContentBlock::ToolUse { .. }));
+        assert!(matches!(sanitized[1].content[0], ContentBlock::ToolResult { .. }));
+    }
+
+    #[test]
+    fn convert_for_openai_drops_orphan_tool_results() {
+        let session_id = "sess";
+        let messages = vec![
+            user_tool_result_message(session_id, "orphan_call"),
+            Message::new(session_id, Role::Assistant, vec![ContentBlock::text("hello")]),
+            assistant_tool_message(session_id, "call_1"),
+            user_tool_result_message(session_id, "call_1"),
+        ];
+
+        let prepared = prepare_model_input(&messages);
+        let converted = convert_for_openai(&prepared);
+
+        assert_eq!(converted.len(), 3);
+        assert_eq!(converted[0]["role"], "assistant");
+        assert_eq!(converted[1]["role"], "assistant");
+        assert_eq!(converted[1]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(converted[2]["role"], "tool");
+        assert_eq!(converted[2]["tool_call_id"], "call_1");
+        assert_eq!(prepared.tool_chain_report.dropped_orphan_tool_result_ids, vec!["orphan_call"]);
+    }
+
+    #[test]
+    fn convert_for_openai_drops_incomplete_tool_call_chain_after_cancel() {
+        let session_id = "sess";
+        let messages = vec![
+            Message::new(
+                session_id,
+                Role::Assistant,
+                vec![
+                    ContentBlock::Text { text: "let me call tools".into(), reasoning_content: None },
+                    ContentBlock::tool_use("call_1", "AskUserQuestion", serde_json::json!({})),
+                    ContentBlock::tool_use("call_2", "AskUserQuestion", serde_json::json!({})),
+                ],
+            ),
+            Message::new(session_id, Role::User, vec![ContentBlock::text("我刚刚取消了")]),
+        ];
+
+        let prepared = prepare_model_input(&messages);
+        let converted = convert_for_openai(&prepared);
+
+        assert_eq!(converted.len(), 2);
+        assert_eq!(converted[0]["role"], "assistant");
+        assert_eq!(converted[0]["content"], "let me call tools");
+        assert!(converted[0].get("tool_calls").is_none());
+        assert_eq!(converted[1]["role"], "user");
+        assert_eq!(
+            prepared.tool_chain_report.dropped_incomplete_tool_call_ids,
+            vec!["call_1".to_string(), "call_2".to_string()]
+        );
+    }
+
+    #[test]
+    fn normalize_for_claude_keeps_complete_tool_chain() {
+        let session_id = "sess";
+        let messages = vec![
+            assistant_tool_message(session_id, "call_1"),
+            user_tool_result_message(session_id, "call_1"),
+        ];
+
+        let prepared = prepare_model_input(&messages);
+        let normalized = normalize_for_claude(&prepared);
+
+        assert_eq!(normalized.len(), 2);
+        assert!(matches!(normalized[0].content[0], ContentBlock::ToolUse { .. }));
+        assert!(matches!(normalized[1].content[0], ContentBlock::ToolResult { .. }));
+    }
+
+    #[test]
+    fn normalize_for_claude_drops_incomplete_tool_chain() {
+        let session_id = "sess";
+        let messages = vec![
+            assistant_tool_message(session_id, "call_1"),
+            Message::new(session_id, Role::User, vec![ContentBlock::text("继续")]),
+        ];
+
+        let prepared = prepare_model_input(&messages);
+        let normalized = normalize_for_claude(&prepared);
+
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(normalized[0].role, Role::User);
+        assert!(matches!(normalized[0].content[0], ContentBlock::Text { .. }));
+    }
 }
 
 /// 错误重试判断

@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use core_protocol::*;
-use crate::{normalize_for_claude, CallTrace, ProviderAdapter};
+use crate::{normalize_for_claude, prepare_model_input, CallTrace, ProviderAdapter};
 use std::time::Instant;
 
 pub struct ClaudeAdapter;
@@ -21,16 +21,17 @@ impl ProviderAdapter for ClaudeAdapter {
     ) -> Result<(Response, CallTrace), String> {
         let start = Instant::now();
         let url = build_url(&config.base_url);
+        let prepared = prepare_model_input(messages);
         let mut trace = CallTrace {
             api_url: url.clone(),
             protocol: "claude".to_string(),
             model: config.model.clone(),
             stream: false,
+            tool_chain_report: Some(prepared.tool_chain_report.clone()),
             ..Default::default()
         };
 
-        // 关键：normalize 消息，过滤 assistant 中的 tool_use
-        let normalized = normalize_for_claude(messages);
+        let normalized = normalize_for_claude(&prepared);
 
         let mut body = serde_json::json!({
             "model": config.model,
@@ -88,15 +89,17 @@ impl ProviderAdapter for ClaudeAdapter {
     ) -> Result<(Response, CallTrace), String> {
         let start = Instant::now();
         let url = build_url(&config.base_url);
+        let prepared = prepare_model_input(messages);
         let mut trace = CallTrace {
             api_url: url.clone(),
             protocol: "claude".to_string(),
             model: config.model.clone(),
             stream: true,
+            tool_chain_report: Some(prepared.tool_chain_report.clone()),
             ..Default::default()
         };
 
-        let normalized = normalize_for_claude(messages);
+        let normalized = normalize_for_claude(&prepared);
         let mut body = serde_json::json!({
             "model": config.model,
             "max_tokens": config.max_tokens,

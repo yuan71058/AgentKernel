@@ -523,9 +523,10 @@ async fn handle_send_message(
     };
 
     let result = scaffold.chat_with_options(opts).await;
-    event_forwarder.abort();
-    // 给 forwarder 和 send_task 一点时间把最后的 MODEL_COMPLETED 事件刷到 WS
+    // 先让 forwarder 有机会把最后的 model.completed / run.completed / error 事件刷到 WS，
+    // 再停止转发任务，避免终态事件被提前中断丢失。
     tokio::task::yield_now().await;
+    event_forwarder.abort();
 
     match result {
         Ok(resp) => {
@@ -540,6 +541,7 @@ async fn handle_send_message(
                     "output_tokens": resp.usage.output_tokens,
                 },
                 "traces": resp.traces.len(),
+                "trace_details": resp.traces,
                 "tool_calls_made": resp.tool_calls_made,
             })).await;
         }

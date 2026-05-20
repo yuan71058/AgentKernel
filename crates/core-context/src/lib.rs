@@ -11,6 +11,7 @@
 
 use core_events::EventBus;
 use core_protocol::*;
+use std::collections::HashSet;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -290,11 +291,73 @@ impl ContextManager {
         if let Some(keep) = rules.keep_recent_messages {
             let keep = keep as usize;
             if result.len() > keep {
-                result = result[result.len() - keep..].to_vec();
+                let start = Self::normalize_keep_recent_start(&result, result.len() - keep);
+                result = result[start..].to_vec();
             }
         }
 
         result
+    }
+
+    fn normalize_keep_recent_start(messages: &[Message], mut start: usize) -> usize {
+        loop {
+            let Some(tool_result_ids) = Self::tool_result_ids(messages.get(start)) else {
+                break;
+            };
+            if tool_result_ids.is_empty() {
+                break;
+            }
+
+            let mut matched_index = None;
+            for idx in (0..start).rev() {
+                let tool_use_ids = Self::tool_use_ids(messages.get(idx));
+                if !tool_use_ids.is_empty() && tool_result_ids.is_subset(&tool_use_ids) {
+                    matched_index = Some(idx);
+                    break;
+                }
+            }
+
+            match matched_index {
+                Some(idx) if idx < start => start = idx,
+                _ => break,
+            }
+        }
+
+        start
+    }
+
+    fn tool_result_ids(message: Option<&Message>) -> Option<HashSet<String>> {
+        let message = message?;
+        if message.role != Role::User {
+            return None;
+        }
+
+        let ids: HashSet<String> = message.content.iter().filter_map(|block| {
+            if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                Some(tool_use_id.clone())
+            } else {
+                None
+            }
+        }).collect();
+
+        Some(ids)
+    }
+
+    fn tool_use_ids(message: Option<&Message>) -> HashSet<String> {
+        let Some(message) = message else {
+            return HashSet::new();
+        };
+        if message.role != Role::Assistant {
+            return HashSet::new();
+        }
+
+        message.content.iter().filter_map(|block| {
+            if let ContentBlock::ToolUse { id, .. } = block {
+                Some(id.clone())
+            } else {
+                None
+            }
+        }).collect()
     }
 }
 
@@ -304,4 +367,61 @@ pub struct ContextStats {
     pub estimated_tokens: u64,
     pub window_tokens: u64,
     pub usage_percent: u8,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user_text(session_id: &str, text: &str) -> Message {
+        Message::new(session_id, Role::User, vec![ContentBlock::text(text)])
+    }
+
+    fn assistant_text(session_id: &str, text: &str) -> Message {
+        Message::new(session_id, Role::Assistant, vec![ContentBlock::text(text)])
+    }
+
+    fn assistant_tool(session_id: &str, id: &str) -> Message {
+        Message::new(
+            session_id,
+            Role::Assistant,
+            vec![ContentBlock::tool_use(id, "AskUserQuestion", serde_json::json!({}))],
+        )
+    }
+
+    fn user_tool_result(session_id: &str, id: &str) -> Message {
+        Message::new(
+            session_id,
+            Role::User,
+            vec![ContentBlock::tool_result(id, "ok", false)],
+        )
+    }
+
+    #[test]
+    fn keep_recent_expands_to_include_matching_tool_call() {
+        let event_bus = Arc::new(EventBus::new(16));
+        let manager = ContextManager::new(128_000, 80, event_bus);
+        let session_id = "sess";
+
+        let messages = vec![
+            user_text(session_id, "older"),
+            assistant_tool(session_id, "call_1"),
+            user_tool_result(session_id, "call_1"),
+            assistant_text(session_id, "after tool"),
+            user_text(session_id, "continue"),
+            assistant_tool(session_id, "call_2"),
+            user_tool_result(session_id, "call_2"),
+        ];
+
+        let rules = ContextRules {
+            keep_recent_messages: Some(5),
+            ..Default::default()
+        };
+
+        let view = manager.apply_rules(&messages, &rules);
+
+        assert_eq!(view.len(), 6);
+        assert!(matches!(view[0].content[0], ContentBlock::ToolUse { .. }));
+        assert!(matches!(view[1].content[0], ContentBlock::ToolResult { .. }));
+    }
 }
