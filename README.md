@@ -14,6 +14,8 @@
 > 0 嵌入式，高效并发，使用它，就像使用对象这么简单。
 > 所有方式均通过 WebSocket 协议通讯，无需强嵌入到你的项目代码，完全独立运行的微服务！
 
+**🌐 在线演示：** [https://cih1996.github.io/AgentKernel/](https://cih1996.github.io/AgentKernel/)
+
 ## 🚀 简介
 
 **工具能力、Skill、MCP 均可自由动态热插拔注册，回调。**

@@ -1,0 +1,13 @@
+target/
+.git/
+.github/
+.aicore/
+assets/
+skill/
+web/
+tem/
+*.md
+*.toml.bak
+.Trash
+.DS_Store
+node_modules/
