@@ -1,0 +1,7 @@
+name = "agentkernel"
+# Shuttle 部署配置
+# 环境变量通过 `cargo shuttle secrets set KEY=VALUE` 或 Shuttle Dashboard 设置
+
+[build]
+# 指定 shuttle 二进制
+binary = "agentkernel-shuttle"

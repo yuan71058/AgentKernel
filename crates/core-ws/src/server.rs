@@ -148,14 +148,19 @@ impl WsServer {
         Self { scaffold }
     }
 
-    /// 启动 WS 服务器
-    pub async fn start(&self, addr: &str) -> Result<(), String> {
+    /// 构建 axum Router（不含绑定，供 Shuttle 等外部服务使用）
+    pub fn router(&self) -> Router {
         let scaffold = self.scaffold.clone();
-        let app = Router::new()
+        Router::new()
             .route("/ws", any(move |ws| {
                 let scaffold = scaffold.clone();
                 async move { handle_ws_upgrade(ws, scaffold).await }
-            }));
+            }))
+    }
+
+    /// 启动 WS 服务器
+    pub async fn start(&self, addr: &str) -> Result<(), String> {
+        let app = self.router();
 
         let listener = tokio::net::TcpListener::bind(addr).await
             .map_err(|e| format!("bind {} failed: {}", addr, e))?;
