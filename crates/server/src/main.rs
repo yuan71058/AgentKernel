@@ -32,7 +32,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let addr = get_arg("--addr", "0.0.0.0:9991");
-    let protocol_str = get_arg("--protocol", "openai");
+    let protocol_str = get_arg("--protocol", "");
+    let protocol_str = if protocol_str.is_empty() {
+        std::env::var("PROTOCOL").unwrap_or_else(|_| "openai".to_string())
+    } else {
+        protocol_str
+    };
 
     let protocol = match protocol_str.as_str() {
         "claude" => Protocol::Claude,
@@ -46,14 +51,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let api_key = get_arg("--api-key", "");
     let api_key = if api_key.is_empty() {
-        std::env::var(default_key_env).unwrap_or_default()
+        std::env::var("API_KEY")
+            .or_else(|_| std::env::var(default_key_env))
+            .unwrap_or_default()
     } else {
         api_key
     };
 
     let base_url = get_arg("--base-url", "");
     let base_url = if base_url.is_empty() {
-        std::env::var(&format!("{}_BASE_URL", default_key_env.replace("_API_KEY", "")))
+        std::env::var("BASE_URL")
+            .or_else(|_| std::env::var(&format!("{}_BASE_URL", default_key_env.replace("_API_KEY", ""))))
             .unwrap_or_else(|_| default_url.to_string())
     } else {
         base_url
@@ -61,7 +69,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let model = get_arg("--model", "");
     let model = if model.is_empty() {
-        std::env::var(&format!("{}_MODEL", default_key_env.replace("_API_KEY", "")))
+        std::env::var("MODEL")
+            .or_else(|_| std::env::var(&format!("{}_MODEL", default_key_env.replace("_API_KEY", ""))))
             .unwrap_or_else(|_| default_model.to_string())
     } else {
         model

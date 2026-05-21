@@ -3,13 +3,13 @@ const { createApp, ref, computed, nextTick, onMounted } = Vue;
 
 createApp({
   setup() {
-    // WS 地址自适应：URL 参数 > 本地开发 > 生产环境（Shuttle）
+    // WS 地址自适应：URL 参数 > 本地开发 > 生产环境（Fly.io）
     const params = new URLSearchParams(window.location.search);
-    const shuttleHost = params.get('ws') || '';
+    const customWs = params.get('ws') || '';
     const defaultWs = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
       ? 'ws://localhost:9991/ws'
-      : 'wss://agentkernel.shuttle.app/ws';
-    const wsUrl = ref(shuttleHost || defaultWs);
+      : 'wss://agentkernel.fly.dev/ws';
+    const wsUrl = ref(customWs || defaultWs);
     const connected = ref(false);
     const connectionId = ref('');
     const sessionId = ref('debug_session');
