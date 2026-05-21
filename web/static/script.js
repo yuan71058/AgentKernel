@@ -1224,6 +1224,25 @@ createApp({
       loadRuntimeSessions();
     }
 
+    function insertChatMessage(role) {
+      if (!ws || !chatInput.value.trim()) return;
+      const text = chatInput.value.trim();
+      const rid = nextReqId();
+      const fullMsg = {
+        command: 'session.message.insert',
+        request_id: rid,
+        session_id: sessionId.value,
+        payload: { role, content: text }
+      };
+      const out = JSON.stringify(fullMsg);
+      ws.send(out);
+      addRawMessage('out', out);
+      // 在聊天区域显示一条本地提示
+      chatMessages.value.push({ role, text, meta: now() + ' [已插入]' });
+      chatInput.value = '';
+      scrollToChat();
+    }
+
     function cancelCurrentRun() {
       if (!ws || !currentRunId.value) return;
       currentRunStatus.value = 'cancelling';
@@ -1870,7 +1889,7 @@ createApp({
       streamingText, isStreaming, currentRunId, currentRunStatus, runStatusLabel, autoReconnect,
       streamingThinking,
       latestToolChainReport, latestTraceDetails, formatToolChainIds, toolChainStatusText, toolChainIssueCount,
-      connect, disconnect, sendChat, cancelCurrentRun, sendRaw, sendToolResult,
+      connect, disconnect, sendChat, insertChatMessage, cancelCurrentRun, sendRaw, sendToolResult,
       defineClientTool, handleToolCallRequest,
       loadSessions, selectSession, createNewSession, deleteSession,
       registerPresetTool, registerPresetTools,

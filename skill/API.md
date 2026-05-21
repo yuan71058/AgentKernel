@@ -173,6 +173,7 @@ async def connect():
   "payload": {
     "commands": [
       "session.send",
+      "session.message.insert",
       "tool.register",
       "tool.unregister",
       "provider.update",
@@ -316,7 +317,63 @@ async def connect():
 
 ---
 
-### 4.2 `provider.update` — 更新 Session 级 Provider 配置
+### 4.2 `session.message.insert` — 插入消息（不触发推理）
+
+**作用**: 往 session 消息历史中插入一条 user 或 assistant 消息，不触发模型推理。下次 `session.send` 时这些消息会作为上下文的一部分被模型看到。
+
+**典型场景**:
+- 业务端需要注入用户侧备注、系统采集的数据
+- 注入 assistant 回复（如预设回答、外部生成的内容）
+- 不需要模型处理，只需要作为上下文存在的消息
+
+**请求**（已验证）:
+
+```json
+{
+  "type": "command",
+  "request_id": "r2",
+  "command": "session.message.insert",
+  "session_id": "my_session",
+  "payload": {
+    "role": "user",
+    "content": "这是插入的消息内容"
+  }
+}
+```
+
+| payload 字段 | 类型 | 必填 | 说明 |
+|--------------|------|------|------|
+| `role` | string | 是 | `"user"` 或 `"assistant"` |
+| `content` | string | 是 | 消息文本内容 |
+
+**成功响应**（已验证）:
+
+```json
+{
+  "type": "response",
+  "request_id": "r2",
+  "success": true,
+  "payload": {
+    "message_id": "msg_3d2bcd54-0e56-47b3-a567-7ed681601522",
+    "role": "user",
+    "session_id": "my_session"
+  }
+}
+```
+
+**错误响应**:
+
+| 场景 | error |
+|------|-------|
+| role 不是 user/assistant | `"role must be 'user' or 'assistant'"` |
+| content 为空 | `"content is required"` |
+| session_id 为空 | `"session_id is required"` |
+
+> **注意**: 如果 session 不存在会自动创建。插入的消息 `kind` 为 `normal`，与普通对话消息无异。消息持久化到内存和存储层，刷新后仍然存在。
+
+---
+
+### 4.3 `provider.update` — 更新 Session 级 Provider 配置
 
 **作用**: 为指定 session 设置模型供应商覆盖配置，持久化到 session metadata。
 
@@ -369,7 +426,7 @@ async def connect():
 
 ---
 
-### 4.3 `provider.get` — 读取 Provider 配置
+### 4.4 `provider.get` — 读取 Provider 配置
 
 **作用**: 获取当前 session 的 provider 配置；无覆盖则返回全局默认。
 
@@ -413,7 +470,7 @@ async def connect():
 
 ---
 
-### 4.4 `system_prompt.set` — 设置系统提示词
+### 4.5 `system_prompt.set` — 设置系统提示词
 
 **作用**: 设置系统提示词。带 `session_id` 时持久化为 session override。
 
@@ -454,7 +511,7 @@ async def connect():
 
 ---
 
-### 4.5 `system_prompt.get` — 读取系统提示词
+### 4.6 `system_prompt.get` — 读取系统提示词
 
 **请求**:
 
@@ -484,7 +541,7 @@ async def connect():
 
 ---
 
-### 4.6 `tool.register` — 注册工具
+### 4.7 `tool.register` — 注册工具
 
 **作用**: 向 Kernel 注册一个可被模型调用的工具。带 `session_id` 时持久化工具快照到 session metadata。
 
@@ -537,7 +594,7 @@ async def connect():
 
 ---
 
-### 4.7 `tool.unregister` — 注销工具
+### 4.8 `tool.unregister` — 注销工具
 
 **请求**:
 
@@ -568,7 +625,7 @@ async def connect():
 
 ---
 
-### 4.8 `tool.list` — 获取工具列表
+### 4.9 `tool.list` — 获取工具列表
 
 **请求**:
 
@@ -628,7 +685,7 @@ async def connect():
 
 ---
 
-### 4.9 `tool.get` — 获取单个工具详情
+### 4.10 `tool.get` — 获取单个工具详情
 
 **请求**:
 
@@ -670,7 +727,7 @@ async def connect():
 
 ---
 
-### 4.10 `tool.execute.result` — 回传工具执行结果
+### 4.11 `tool.execute.result` — 回传工具执行结果
 
 **作用**: 客户端收到 `tool.call.request` 事件后，执行工具并通过此命令回传结果。
 
@@ -699,7 +756,7 @@ async def connect():
 
 ---
 
-### 4.11 `session.list` — 获取 Session 列表
+### 4.12 `session.list` — 获取 Session 列表
 
 **请求**:
 
@@ -754,7 +811,7 @@ async def connect():
 
 ---
 
-### 4.12 `session.info` — 获取 Session 详情
+### 4.13 `session.info` — 获取 Session 详情
 
 **请求**:
 
@@ -800,7 +857,7 @@ async def connect():
 
 ---
 
-### 4.13 `session.get` — 获取 Session 简要统计
+### 4.14 `session.get` — 获取 Session 简要统计
 
 **请求**:
 
@@ -832,7 +889,7 @@ async def connect():
 
 ---
 
-### 4.14 `session.messages` — 分页读取全量消息
+### 4.15 `session.messages` — 分页读取全量消息
 
 **请求**:
 
@@ -899,7 +956,7 @@ async def connect():
 
 ---
 
-### 4.15 `session.delete` — 删除 Session
+### 4.16 `session.delete` — 删除 Session
 
 **请求**:
 
@@ -925,7 +982,7 @@ async def connect():
 
 ---
 
-### 4.16 `session.clear` — 清空上下文视图
+### 4.17 `session.clear` — 清空上下文视图
 
 **作用**: 清空当前 Active Context，不删除消息历史。
 
@@ -958,7 +1015,7 @@ async def connect():
 
 ---
 
-### 4.17 `system.stats` — 系统统计
+### 4.18 `system.stats` — 系统统计
 
 **请求**:
 
@@ -994,7 +1051,7 @@ async def connect():
 
 ---
 
-### 4.18 `runtime.sessions` — 查询运行中的 Session
+### 4.19 `runtime.sessions` — 查询运行中的 Session
 
 **请求**:
 
@@ -1028,7 +1085,7 @@ async def connect():
 
 ---
 
-### 4.19 `context.preview` — 预览上下文视图
+### 4.20 `context.preview` — 预览上下文视图
 
 **请求**:
 
@@ -1078,7 +1135,7 @@ async def connect():
 
 ---
 
-### 4.20 `context.reset` — 重置上下文规则
+### 4.21 `context.reset` — 重置上下文规则
 
 **请求**:
 
@@ -1095,7 +1152,7 @@ async def connect():
 
 ---
 
-### 4.21 `context.exclude` — 排除消息区间
+### 4.22 `context.exclude` — 排除消息区间
 
 **请求**:
 
@@ -1120,7 +1177,7 @@ async def connect():
 
 ---
 
-### 4.22 `context.include_after` — 从某消息后纳入上下文
+### 4.23 `context.include_after` — 从某消息后纳入上下文
 
 **请求**:
 
@@ -1139,7 +1196,7 @@ async def connect():
 
 ---
 
-### 4.23 `context.keep_recent` — 只保留最近 N 条
+### 4.24 `context.keep_recent` — 只保留最近 N 条
 
 **请求**:
 
@@ -1160,7 +1217,7 @@ async def connect():
 
 ---
 
-### 4.24 `context.seed.add` — 注入上下文 Seed
+### 4.25 `context.seed.add` — 注入上下文 Seed
 
 **请求**:
 
@@ -1189,7 +1246,7 @@ async def connect():
 
 ---
 
-### 4.25 `context.compaction.apply` — 应用压缩摘要
+### 4.26 `context.compaction.apply` — 应用压缩摘要
 
 **请求**:
 
@@ -1209,7 +1266,7 @@ async def connect():
 
 ---
 
-### 4.26 `events.pull` — 断线补拉事件
+### 4.27 `events.pull` — 断线补拉事件
 
 **请求**:
 
@@ -1243,7 +1300,7 @@ async def connect():
 
 ---
 
-### 4.27 `events.subscribe` — 订阅实时事件
+### 4.28 `events.subscribe` — 订阅实时事件
 
 **请求**:
 
@@ -1279,7 +1336,7 @@ async def connect():
 
 ---
 
-### 4.28 `run.cancel` — 中断运行
+### 4.29 `run.cancel` — 中断运行
 
 **请求**:
 

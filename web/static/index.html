@@ -659,6 +659,12 @@
               <button class="btn" @click="cancelCurrentRun" :disabled="!connected || !currentRunId || !['pending','running','streaming','cancelling'].includes(currentRunStatus)" title="停止当前生成">
                 停止
               </button>
+              <button class="btn" @click="insertChatMessage('user')" :disabled="!connected || !chatInput.trim()" title="插入为用户消息（不触发推理）" style="font-size:11px;opacity:0.7">
+                插入用户
+              </button>
+              <button class="btn" @click="insertChatMessage('assistant')" :disabled="!connected || !chatInput.trim()" title="插入为助手消息（不触发推理）" style="font-size:11px;opacity:0.7">
+                插入助手
+              </button>
               <button class="btn btn-send" @click="sendChat" :disabled="!connected || !chatInput.trim()">
                 <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
               </button>

@@ -19,7 +19,14 @@
 > Zero-embedding, high concurrency—using it is as simple as using an object.
 > Everything communicates via the WebSocket protocol, requiring no tight coupling to your project code. A completely independent microservice!
 
-**🌐 Online Demo:** [https://cih1996.github.io/AgentKernel/](https://cih1996.github.io/AgentKernel/)
+**🌐 Online Demo:** [https://cih1996.github.io/AgentKernel/](https://cih1996.github.io/AgentKernel/)<br>
+**📺 Video Tutorial (How to integrate):**
+
+<div align="center">
+  <a href="https://youtu.be/iSo_Ux1AcRw?si=JGDLmntvuN51CmoT">
+    <img src="https://img.youtube.com/vi/iSo_Ux1AcRw/maxresdefault.jpg" alt="AgentKernel Video Tutorial" width="600" style="border-radius: 8px;">
+  </a>
+</div>
 
 ## 🚀 Introduction
 

@@ -191,6 +191,7 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
             "server_version": "1.0.0",
             "commands": [
                 commands::SEND_MESSAGE,
+                commands::MESSAGE_INSERT,
                 commands::REGISTER_TOOL,
                 commands::UNREGISTER_TOOL,
                 commands::UPDATE_PROVIDER,
@@ -264,6 +265,9 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
                 tokio::spawn(handle_send_message(
                     scaffold, tx_clone, sid, rid, payload,
                 ));
+            }
+            commands::MESSAGE_INSERT => {
+                handle_message_insert(&scaffold, &tx_clone, &session_id, &request_id, payload).await;
             }
             "tool.execute.result" => {
                 // 解析客户端返回的工具执行结果，通过 WsToolRouter 唤醒等待中的 runtime
@@ -589,6 +593,55 @@ async fn upsert_session_tool_snapshot(
         registration: Some(registration.clone()),
     });
     save_session_tool_snapshot(scaffold, session_id, &snapshot).await
+}
+
+async fn handle_message_insert(
+    scaffold: &AgentKernel,
+    tx: &mpsc::Sender<WsMessage>,
+    session_id: &str,
+    request_id: &str,
+    payload: serde_json::Value,
+) {
+    if session_id.is_empty() {
+        send_err(tx, request_id, "session_id is required").await;
+        return;
+    }
+
+    let role_str = payload["role"].as_str().unwrap_or("");
+    let content_str = payload["content"].as_str().unwrap_or("");
+
+    if content_str.is_empty() {
+        send_err(tx, request_id, "content is required").await;
+        return;
+    }
+
+    let role = match role_str {
+        "user" => Role::User,
+        "assistant" => Role::Assistant,
+        _ => {
+            send_err(tx, request_id, "role must be 'user' or 'assistant'").await;
+            return;
+        }
+    };
+
+    // 确保 session 存在
+    let _ = scaffold.session_mgr.get_or_create(session_id).await;
+
+    let msg = core_protocol::Message::new(session_id, role.clone(), vec![ContentBlock::text(content_str)]);
+    let message_id = msg.message_id.clone();
+
+    scaffold.context_mgr.add_message(session_id, msg.clone());
+    if let Err(e) = scaffold.storage.save_message(&msg).await {
+        send_err(tx, request_id, &format!("save failed: {}", e)).await;
+        return;
+    }
+
+    info!(session_id = %session_id, message_id = %message_id, role = ?role, "message inserted");
+    send_ok(tx, request_id, json!({
+        "message_id": message_id,
+        "session_id": session_id,
+        "role": role_str,
+    })).await;
 }
 
 async fn remove_session_tool_snapshot(

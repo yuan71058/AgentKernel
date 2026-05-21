@@ -19,7 +19,14 @@
 > 0 嵌入式，高效并发，使用它，就像使用对象这么简单。
 > 所有方式均通过 WebSocket 协议通讯，无需强嵌入到你的项目代码，完全独立运行的微服务！
 
-**🌐 在线演示：** [https://cih1996.github.io/AgentKernel/](https://cih1996.github.io/AgentKernel/)
+**🌐 在线演示：** [https://cih1996.github.io/AgentKernel/](https://cih1996.github.io/AgentKernel/)<br>
+**📺 视频教程 (如何接入项目)：**
+
+<div align="center">
+  <a href="https://youtu.be/iSo_Ux1AcRw?si=JGDLmntvuN51CmoT">
+    <img src="https://img.youtube.com/vi/iSo_Ux1AcRw/maxresdefault.jpg" alt="AgentKernel 视频教程" width="600" style="border-radius: 8px;">
+  </a>
+</div>
 
 ## 🚀 简介
 

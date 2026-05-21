@@ -52,6 +52,7 @@ pub mod commands {
 
     // ─── Session（session_id 非空时作用于该 session）──
     pub const SEND_MESSAGE: &str = "session.send";
+    pub const MESSAGE_INSERT: &str = "session.message.insert";
     pub const GET_SESSION: &str = "session.get";
     pub const SESSION_INFO: &str = "session.info";
     pub const SESSION_DELETE: &str = "session.delete";
