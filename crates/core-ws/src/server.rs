@@ -471,10 +471,7 @@ async fn handle_send_message(
     payload: serde_json::Value,
 ) {
     let message = payload["message"].as_str().unwrap_or("");
-    let max_repeated_tool_calls = payload["max_repeated_tool_calls"]
-        .as_u64()
-        .or_else(|| payload["max_rounds"].as_u64())
-        .unwrap_or(10) as u32;
+    let max_repeated_tool_calls = payload["max_repeated_tool_calls"].as_u64().unwrap_or(10) as u32;
     let images: Vec<String> = payload["images"].as_array()
         .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();

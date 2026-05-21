@@ -39,7 +39,4 @@ pub struct SendMessageRequest {
     /// 连续相同工具名 + 相同输入的检测阈值；达到后判定为疑似死循环。
     #[serde(default)]
     pub max_repeated_tool_calls: u32,
-    /// 兼容旧字段；建议改用 `max_repeated_tool_calls`。
-    #[serde(default)]
-    pub max_rounds: u32,
 }

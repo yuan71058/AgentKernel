@@ -64,7 +64,7 @@ createApp({
     const AGENT_TOOL_PROVIDER_TEMPLATE = Object.freeze({
       protocol: 'openai',
       base_url: 'https://api.deepseek.com',
-      api_key: 'sk-301169725af74465bb798b01de6fd150',
+      api_key: 'sk-992a9301292347fea6f118e9a33d466e',
       model: 'deepseek-reasoner',
       max_tokens: 4096,
       temperature: 0.5,
