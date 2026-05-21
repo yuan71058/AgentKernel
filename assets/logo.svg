@@ -1,0 +1,51 @@
+<svg width="400" height="400" viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
+    <!-- Background -->
+    <rect width="400" height="400" fill="#FFFFFF" rx="16"/>
+    
+    <!-- Outer Ring (Kernel/Orbit) -->
+    <circle cx="200" cy="200" r="160" fill="none" stroke="#e5e7eb" stroke-width="12" stroke-dasharray="20 15"/>
+    <circle cx="200" cy="200" r="120" fill="none" stroke="#f3f4f6" stroke-width="8"/>
+    
+    <!-- Connection Nodes (WebSocket/Nodes) -->
+    <circle cx="200" cy="40" r="12" fill="#2563eb"/>
+    <circle cx="200" cy="360" r="12" fill="#10b981"/>
+    <circle cx="40" cy="200" r="12" fill="#f59e0b"/>
+    <circle cx="360" cy="200" r="12" fill="#8b5cf6"/>
+    
+    <circle cx="87" cy="87" r="8" fill="#06b6d4"/>
+    <circle cx="313" cy="313" r="8" fill="#ec4899"/>
+    
+    <!-- Connecting Lines -->
+    <path d="M200 60 L200 120" stroke="#2563eb" stroke-width="4" stroke-linecap="round"/>
+    <path d="M200 340 L200 280" stroke="#10b981" stroke-width="4" stroke-linecap="round"/>
+    <path d="M60 200 L120 200" stroke="#f59e0b" stroke-width="4" stroke-linecap="round"/>
+    <path d="M340 200 L280 200" stroke="#8b5cf6" stroke-width="4" stroke-linecap="round"/>
+    
+    <!-- Central Core (AI/Brain) -->
+    <g transform="translate(130, 130)">
+        <!-- Hexagon Base -->
+        <polygon points="70,10 130,45 130,115 70,150 10,115 10,45" fill="#0f172a" opacity="0.9"/>
+        <polygon points="70,25 115,50 115,105 70,130 25,105 25,50" fill="#2563eb"/>
+        
+        <!-- Inner circuitry/stars -->
+        <circle cx="70" cy="70" r="25" fill="#e5e7eb"/>
+        <circle cx="70" cy="70" r="15" fill="#ffffff"/>
+        
+        <!-- Connections to center -->
+        <line x1="70" y1="25" x2="70" y2="45" stroke="#9ca3af" stroke-width="3"/>
+        <line x1="70" y1="130" x2="70" y2="115" stroke="#9ca3af" stroke-width="3"/>
+        <line x1="25" y1="50" x2="50" y2="60" stroke="#9ca3af" stroke-width="3"/>
+        <line x1="115" y1="105" x2="90" y2="80" stroke="#9ca3af" stroke-width="3"/>
+    </g>
+    
+    <!-- Dynamic sparks/data flow -->
+    <circle cx="160" cy="160" r="4" fill="#f59e0b">
+        <animate attributeName="opacity" values="0;1;0" dur="2s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="240" cy="240" r="4" fill="#10b981">
+        <animate attributeName="opacity" values="0;1;0" dur="2.5s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="150" cy="230" r="3" fill="#06b6d4">
+        <animate attributeName="opacity" values="0;1;0" dur="1.8s" repeatCount="indefinite"/>
+    </circle>
+</svg>

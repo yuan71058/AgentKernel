@@ -3,6 +3,7 @@
 </div>
 
 <div align="center">
+  <img src="assets/logo.svg" alt="AgentKernel Logo" width="180">
   <h1>🚀 AgentKernel</h1>
   <p><b>一个轻量、可嵌入、WebSocket 驱动的 AI Runtime Kernel</b></p>
   <p>
@@ -226,6 +227,8 @@ python3 server.py
 - [ ] SDK 示例 (JS / Python / Go)
 
 **License:** MIT\
-**社区交流:** QQ群 `250892941`
+**社区交流:** <br>
+QQ群 `250892941` <br>
+<a href="https://discord.gg/mcQtYDVjW"><img src="https://img.shields.io/badge/Discord-Join%20Us-7289DA?style=flat-square&logo=discord&logoColor=white" alt="Discord"></a>
 
 [![Star History Chart](https://api.star-history.com/svg?repos=cih1996/AgentKernel\&type=Date)](https://www.star-history.com/#cih1996/AgentKernel\&Date)
