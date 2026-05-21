@@ -18,8 +18,29 @@
         <svg class="icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
         AGENTKERNEL <span>RUNTIME CONSOLE</span>
       </div>
-      <input class="ws-url" v-model="wsUrl" placeholder="ws://localhost:9991/ws"
-             @keyup.enter="connected ? disconnect() : connect()">
+      <div class="ws-select" :class="{ open: wsDropdownOpen }">
+        <div class="ws-select-trigger" @click="wsDropdownOpen = !wsDropdownOpen">
+          <span class="ws-select-label">{{ wsSelectLabel }}</span>
+          <svg class="ws-select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="ws-select-dropdown" v-show="wsDropdownOpen" @click.stop>
+          <div class="ws-select-option" v-for="opt in wsPresets" :key="opt.value"
+               :class="{ active: wsUrl === opt.value }"
+               @click="selectWsPreset(opt.value)">
+            <span class="ws-select-dot" :class="{ active: wsUrl === opt.value }"></span>
+            <div>
+              <div class="ws-select-name">{{ opt.label }}</div>
+              <div class="ws-select-url">{{ opt.value }}</div>
+            </div>
+          </div>
+          <div class="ws-select-divider"></div>
+          <div class="ws-select-custom">
+            <input class="ws-select-input" v-model="wsUrl" placeholder="自定义地址..."
+                   @keyup.enter="wsDropdownOpen = false; connected ? disconnect() : connect()"
+                   @focus="wsCustomMode = true">
+          </div>
+        </div>
+      </div>
       <div class="status">
         <div class="status-dot" :class="connected ? 'connected' : 'disconnected'"></div>
         {{ connected ? '已连接' : '未连接' }}

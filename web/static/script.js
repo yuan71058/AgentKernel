@@ -10,6 +10,28 @@ createApp({
       ? 'ws://localhost:9991/ws'
       : 'wss://agentkernel.fly.dev/ws';
     const wsUrl = ref(customWs || defaultWs);
+    // WS 下拉选择器
+    const wsDropdownOpen = ref(false);
+    const wsCustomMode = ref(false);
+    const wsPresets = [
+      { label: '本地开发', value: 'ws://localhost:9991/ws' },
+      { label: 'Fly.io 线上', value: 'wss://agentkernel.fly.dev/ws' },
+    ];
+    const wsSelectLabel = computed(() => {
+      const found = wsPresets.find(p => p.value === wsUrl.value);
+      return found ? found.label : '自定义';
+    });
+    function selectWsPreset(val) {
+      wsUrl.value = val;
+      wsDropdownOpen.value = false;
+      wsCustomMode.value = false;
+    }
+    // 点击外部关闭下拉
+    if (typeof document !== 'undefined') {
+      document.addEventListener('click', (e) => {
+        if (!e.target.closest('.ws-select')) wsDropdownOpen.value = false;
+      });
+    }
     const connected = ref(false);
     const connectionId = ref('');
     const sessionId = ref('debug_session');
@@ -398,7 +420,13 @@ createApp({
     function connect() {
       if (ws) ws.close();
       if (reconnectTimer.value) { clearTimeout(reconnectTimer.value); reconnectTimer.value = null; }
-      try { ws = new WebSocket(wsUrl.value); } catch(e) { addLocalNotice('连接失败', e.message); scheduleReconnect(); return; }
+      // HTTPS 页面自动修正 ws:// → wss://
+      let url = wsUrl.value;
+      if (window.location.protocol === 'https:' && url.startsWith('ws://')) {
+        url = url.replace('ws://', 'wss://');
+        wsUrl.value = url;
+      }
+      try { ws = new WebSocket(url); } catch(e) { addLocalNotice('连接失败', e.message); scheduleReconnect(); return; }
 
       ws.onopen = () => {
         connected.value = true;
@@ -1745,6 +1773,7 @@ createApp({
 
     return {
       wsUrl, connected, connectionId, sessionId,
+      wsDropdownOpen, wsCustomMode, wsPresets, wsSelectLabel, selectWsPreset,
       selectedSessionId, sessions,
       chatInput, chatMessages,
       fullMessages, fullMessagesPage, fullMessagesTotal, fullMessagesHasMore, fullMessagesLoading,
