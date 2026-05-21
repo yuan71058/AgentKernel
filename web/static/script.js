@@ -420,6 +420,7 @@ createApp({
     function connect() {
       if (ws) ws.close();
       if (reconnectTimer.value) { clearTimeout(reconnectTimer.value); reconnectTimer.value = null; }
+      wsDropdownOpen.value = false;
       // HTTPS 页面自动修正 ws:// → wss://
       let url = wsUrl.value;
       if (window.location.protocol === 'https:' && url.startsWith('ws://')) {

@@ -31,6 +31,27 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helve
 .logo span { color: var(--text3); font-weight: 500; font-size: 12px; }
 .ws-url { flex: 1; max-width: 400px; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px; color: var(--text); font-size: 13px; outline: none; transition: border 0.2s; }
 .ws-url:focus { border-color: var(--blue); background: var(--bg); }
+
+/* WS 下拉选择器 */
+.ws-select { position: relative; flex: 1; max-width: 400px; }
+.ws-select-trigger { display: flex; align-items: center; gap: 8px; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px; cursor: pointer; transition: all 0.2s; user-select: none; }
+.ws-select-trigger:hover { border-color: var(--border2); background: var(--bg); }
+.ws-select.open .ws-select-trigger { border-color: var(--blue); background: var(--bg); border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.ws-select-label { flex: 1; font-size: 13px; color: var(--text); font-weight: 500; }
+.ws-select-arrow { width: 16px; height: 16px; color: var(--text3); transition: transform 0.2s; flex-shrink: 0; }
+.ws-select.open .ws-select-arrow { transform: rotate(180deg); }
+.ws-select-dropdown { position: absolute; top: 100%; left: 0; right: 0; background: var(--bg); border: 1px solid var(--blue); border-top: none; border-radius: 0 0 var(--radius) var(--radius); box-shadow: var(--shadow-md); z-index: 100; overflow: hidden; }
+.ws-select-option { display: flex; align-items: center; gap: 10px; padding: 10px 12px; cursor: pointer; transition: background 0.15s; }
+.ws-select-option:hover { background: var(--bg2); }
+.ws-select-option.active { background: var(--bg3); }
+.ws-select-dot { width: 8px; height: 8px; border-radius: 50%; border: 2px solid var(--border2); flex-shrink: 0; transition: all 0.2s; }
+.ws-select-dot.active { border-color: var(--green); background: var(--green); }
+.ws-select-name { font-size: 13px; font-weight: 600; color: var(--text); }
+.ws-select-url { font-size: 11px; color: var(--text3); font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace; margin-top: 1px; }
+.ws-select-divider { height: 1px; background: var(--border); margin: 4px 0; }
+.ws-select-custom { padding: 8px 12px; }
+.ws-select-input { width: 100%; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 10px; color: var(--text); font-size: 12px; font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace; outline: none; transition: border 0.2s; }
+.ws-select-input:focus { border-color: var(--blue); background: var(--bg); }
 .btn { padding: 8px 16px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer; font-size: 13px; font-weight: 500; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 6px; box-shadow: var(--shadow-sm); }
 .btn:hover { background: var(--bg2); }
 .btn:active { transform: translateY(1px); }
