@@ -1,6 +1,10 @@
+<div align="right">
+  <strong>English</strong> | <a href="./README_zh.md">简体中文</a>
+</div>
+
 <div align="center">
   <h1>🚀 AgentKernel</h1>
-  <p><b>一个轻量、可嵌入、WebSocket 驱动的 AI Runtime Kernel</b></p>
+  <p><b>A lightweight, embeddable, WebSocket-driven AI Runtime Kernel</b></p>
   <p>
     <a href="https://github.com/cih1996/AgentKernel/stargazers"><img src="https://img.shields.io/github/stars/cih1996/AgentKernel?style=flat-square&color=blue" alt="Stars"></a>
     <a href="https://github.com/cih1996/AgentKernel/blob/main/LICENSE"><img src="https://img.shields.io/github/license/cih1996/AgentKernel?style=flat-square" alt="License"></a>
@@ -10,110 +14,110 @@
 
 <br />
 
-> 💡 **超轻量级 Agent 内核，将 AI 接入项目不再是难事！**
-> 0 嵌入式，高效并发，使用它，就像使用对象这么简单。
-> 所有方式均通过 WebSocket 协议通讯，无需强嵌入到你的项目代码，完全独立运行的微服务！
+> 💡 **An ultra-lightweight Agent kernel that makes integrating AI into your projects a breeze!**
+> Zero-embedding, high concurrency—using it is as simple as using an object.
+> Everything communicates via the WebSocket protocol, requiring no tight coupling to your project code. A completely independent microservice!
 
-**🌐 在线演示：** [https://cih1996.github.io/AgentKernel/](https://cih1996.github.io/AgentKernel/)
+**🌐 Online Demo:** [https://cih1996.github.io/AgentKernel/](https://cih1996.github.io/AgentKernel/)
 
-## 🚀 简介
+## 🚀 Introduction
 
-**工具能力、Skill、MCP 均可自由动态热插拔注册，回调。**
+**Tool capabilities, Skills, and MCP can be freely and dynamically hot-plugged, registered, and invoked via callbacks.**
 
-包装好了各类事件回调，不用再重新造轮子：
-1. **上下文管理**：上下文激活，裁剪，注入，阈值检测，全量查询。
-2. **多模型兼容**：供应商兼容 OpenAI、Claude、Ollama。
-3. **工具动态调度**：能力工具实时注册、通过回调由你执行、包括 MCP。
+Various event callbacks are pre-packaged, saving you from reinventing the wheel:
+1. **Context Management**: Context activation, truncation, injection, threshold detection, and full-history queries.
+2. **Multi-Model Compatibility**: Compatible with providers like OpenAI, Claude, and Ollama.
+3. **Dynamic Tool Dispatch**: Real-time registration of capability tools, executed by you via callbacks, including MCP.
 
-**你甚至可以打造下一个 Open Code、Claude Code、OpenClaw 等！**
-因为它是 AI 通讯的内核基座，你不需要再关心供应商兼容问题、TOOL 协议问题、上下文的管理问题，全部已经封装好，但仍可以任由你实时动态调配！
+**You can even build the next Open Code, Claude Code, OpenClaw, etc.!**
+Because it serves as the core communication base for AI, you no longer need to worry about provider compatibility, TOOL protocols, or context management. Everything is encapsulated, yet remains fully dynamic and customizable in real-time!
 
-## 🎯 核心定位
+## 🎯 Core Positioning
 
-AgentKernel 不是聊天 UI，也不是业务 Agent，而是 **Agent Runtime Kernel**。
+AgentKernel is neither a Chat UI nor a Business Agent, but an **Agent Runtime Kernel**.
 
-**核心原则：Kernel 只管运行时，业务端只管编排。**
+**Core Principle: The Kernel handles the runtime; the Business Side handles the orchestration.**
 
-| ⚙️ AgentKernel (运行时核心)       | 🧠 业务端 (应用编排)           |
+| ⚙️ AgentKernel (Runtime Core)       | 🧠 Business Side (Application Orchestration)           |
 | :--------------------------- | :---------------------- |
-| **模型交互**：模型调用、并发调度           | **工具实现**：具体工具执行逻辑与权限    |
-| **状态管理**：Session 管理、持久化存储    | **业务逻辑**：业务提示词、记忆系统提取   |
-| **上下文**：Context 构建、主动暴露阈值事件  | **压缩策略**：MCP 编排、智能上下文压缩 |
-| **通信协议**：WebSocket IPC、事件流分发 | **前端交互**：最终产品 UI 展示     |
+| **Model Interaction**: Model calls, concurrency scheduling | **Tool Implementation**: Specific tool execution logic and permissions |
+| **State Management**: Session management, persistent storage | **Business Logic**: Business prompts, memory system extraction |
+| **Context**: Context building, exposing threshold events | **Compression Strategy**: MCP orchestration, smart context compression |
+| **Communication Protocol**: WebSocket IPC, event stream distribution | **Frontend Interaction**: Final product UI display |
 
-> 💡 **接入注意**
-> AgentKernel 更适合作为“单一执行体系”的 Runtime 内核：同一套业务执行端可复用多个 `session`。\
-> 如果是多用户共享会话或协同查看，建议由业务端在上层做分流、广播和权限控制，而不是让多个用户端直接连接 Core 的同一个 `session`。\
-> Core 负责运行时与协议边界，不负责多用户协同编排。
+> 💡 **Integration Note**
+> AgentKernel is better suited as a "single execution system" Runtime core: the same business execution side can reuse multiple `session`s.\
+> For multi-user shared sessions or collaborative viewing, it is recommended that the business side handles distribution, broadcasting, and permission control at the upper layer, rather than having multiple client endpoints directly connect to the same `session` in the Core.\
+> The Core is responsible for the runtime and protocol boundaries, not multi-user collaborative orchestration.
 
-### 推荐接入方式
+### Recommended Integration Method
 
 ```mermaid
 flowchart LR
-    U[用户浏览器] --> B[业务网站 / Python or Node.js 微服务]
-    B -->|启动时建立长期 WS| K[AgentKernel Core]
-    B -->|按不同 session_id 复用同一连接| K
+    U[User Browser] --> B[Business Website / Python or Node.js Microservice]
+    B -->|Establish long-term WS on startup| K[AgentKernel Core]
+    B -->|Reuse the same connection for different session_ids| K
     K -->|response / event / tool.call.request| B
     B -->|HTTP / SSE / WebSocket| U
 ```
 
-- 推荐由业务服务在启动时与 Core 保持长期 WebSocket 连接，后续复用这条连接处理多个 `session`。
-- 用户请求先进入业务服务，再由业务服务决定 `session`、权限、上下文和工具执行。
-- 如果是多人共享会话，建议由业务服务内部做广播和分流，不要让多个用户端直接连接 Core 的同一个 `session`。
+- It is recommended that the business service maintains a long-term WebSocket connection with the Core upon startup, and reuses this connection to process multiple `session`s.
+- User requests first enter the business service, which then determines the `session`, permissions, context, and tool execution.
+- For multi-user shared sessions, it is recommended to broadcast and distribute internally within the business service. Do not let multiple user endpoints directly connect to the Core's same `session`.
 
-## 🏗️ 架构与原理
+## 🏗️ Architecture & Principles
 
-AgentKernel 采用 **WebSocket** 作为核心双向通信协议，实现状态与控制的完全解耦：
+AgentKernel uses **WebSocket** as its core bidirectional communication protocol to achieve complete decoupling of state and control:
 
 ```mermaid
 sequenceDiagram
-    participant C as 业务端 Client
+    participant C as Business Client
     participant K as AgentKernel
     participant M as LLM (OpenAI/Claude)
     
-    Note over C, K: 1. 初始化与配置阶段
-    C->>K: [Command] tool.register (动态注册工具)
-    K-->>C: 持久化 Schema 并准备就绪
+    Note over C, K: 1. Initialization & Configuration
+    C->>K: [Command] tool.register (Dynamically register tool)
+    K-->>C: Persist Schema and ready
 
-    Note over C, M: 2. 用户交互与上下文处理
-    C->>K: [Command] session.send (发送用户提问)
-    K->>K: 消息落盘 / 构建 Active Context View
+    Note over C, M: 2. User Interaction & Context Processing
+    C->>K: [Command] session.send (Send user query)
+    K->>K: Persist message / Build Active Context View
 
-    Note over K, M: 3. 模型推理与事件流
-    K->>M: 发起请求 (Prompt + Context + Tools)
-    M-->>K: Stream 流式返回
+    Note over K, M: 3. Model Inference & Event Stream
+    K->>M: Initiate request (Prompt + Context + Tools)
+    M-->>K: Stream return
 
-    alt 模型输出普通文本
-        K-->>C: [Event] model.delta (流式推送到前端展示)
-    else 模型触发工具调用 (Tool Call)
-        M-->>K: 返回 tool_calls 意图
-        K-->>C: [Event] tool.call.request (请求业务端执行)
-        Note over C: Client 本地执行业务逻辑
-        C->>K: [Command] tool.execute.result (回传执行结果)
-        K->>M: 携带工具结果再次请求模型
-        M-->>K: 基于工具结果继续推理
-        K-->>C: [Event] model.delta (流式推送到前端展示)
+    alt Model outputs normal text
+        K-->>C: [Event] model.delta (Stream pushed to frontend)
+    else Model triggers Tool Call
+        M-->>K: Return tool_calls intent
+        K-->>C: [Event] tool.call.request (Request business side to execute)
+        Note over C: Client executes business logic locally
+        C->>K: [Command] tool.execute.result (Return execution result)
+        K->>M: Request model again with tool result
+        M-->>K: Continue inference based on tool result
+        K-->>C: [Event] model.delta (Stream pushed to frontend)
     end
 
-    K-->>C: [Event] model.completed (单次运行结束)
+    K-->>C: [Event] model.completed (Single run finished)
 ```
 
-### ✨ 核心特性
+### ✨ Core Features
 
-1. **🔌 工具能力动态热插拔**：无需修改 Kernel 源码。业务端通过 WS 动态注册工具定义，接收 `tool.call.request` 后在本地执行并回传结果。
-2. **📚 全量历史与可控视图**：Message Log 永久保留，但提供 Active Context View。Kernel 只暴露阈值事件，不硬编码压缩策略，交由业务端自由裁量。
-3. **⚡ 事件流即一等公民**：运行过程中主动推送 `model.delta`、`tool.call.request` 等状态；如果供应商支持 reasoning / thinking 流式透传，也会通过 `model.delta.payload.event_type = "thinking"` 往外输出，方便调试与分布式部署。
-4. **🪶 保持极致轻量**：不内置重型的记忆系统、规则库或技能市场。坚守边界，只做跨平台复用的 Runtime。
+1. **🔌 Dynamic Hot-Pluggable Tool Capabilities**: No need to modify Kernel source code. The business side dynamically registers tool definitions via WS, receives `tool.call.request`, executes locally, and returns the result.
+2. **📚 Full History and Controllable Views**: Message Logs are permanently retained, but an Active Context View is provided. The Kernel only exposes threshold events and does not hardcode compression strategies, leaving it to the business side's discretion.
+3. **⚡ Event Streams as First-Class Citizens**: Proactively pushes states like `model.delta` and `tool.call.request` during execution. If the provider supports reasoning/thinking stream passthrough, it also outputs via `model.delta.payload.event_type = "thinking"`, facilitating debugging and distributed deployment.
+4. **🪶 Extremely Lightweight**: Does not have built-in heavy memory systems, rule libraries, or skill markets. Sticks to its boundaries, acting purely as a cross-platform reusable Runtime.
 
-## ⚖️ 适用场景对比
+## ⚖️ Use Case Comparison
 
-| ✅ 适合 AgentKernel 的场景                                                                  | ❌ 不适合的场景                                                                   |
+| ✅ Suitable for AgentKernel                                                                  | ❌ Unsuitable Scenarios                                                                   |
 | :------------------------------------------------------------------------------------ | :------------------------------------------------------------------------- |
-| - 给现有业务系统/Web接入 AI Runtime- 开发跨语言自动化脚本系统- 构建多 Agent 编排平台底层- 打造类似 ComfyUI 的 Agent 运行节点 | - 只需要简单调用一次 LLM 接口- 需要开箱即用的完整 Coding Agent (如 Cursor/Aider)- 寻找现成的聊天 UI 产品 |
+| - Adding AI Runtime to existing business systems/Web<br>- Developing cross-language automated script systems<br>- Building the foundation for multi-Agent orchestration platforms<br>- Creating Agent running nodes similar to ComfyUI | - Only needing a simple one-off LLM API call<br>- Needing an out-of-the-box complete Coding Agent (like Cursor/Aider)<br>- Looking for a ready-made Chat UI product |
 
-## 🚀 快速开始
+## 🚀 Quick Start
 
-先启动 Core：
+First, start the Core:
 
 ```bash
 git clone https://github.com/cih1996/AgentKernel.git
@@ -121,29 +125,29 @@ cd AgentKernel
 cargo run
 ```
 
-- `cargo run` 启动的是**无前端的 Core 内核服务**
-- 默认 WebSocket 地址：`ws://localhost:9991/ws`
-- 如果你的默认二进制不是服务端，也可以显式使用 `cargo run -p agentkernel-server`
+- `cargo run` starts the **headless Core service**.
+- Default WebSocket address: `ws://localhost:9991/ws`
+- If your default binary is not the server, you can explicitly use `cargo run -p agentkernel-server`
 
-如果需要本地网页调试台，再单独启动：
+If you need a local web debugging console, start it separately:
 
 ```bash
 cd web
 python3 server.py
 ```
 
-- 调试页默认地址：<http://127.0.0.1:8899>
-- `web/server.py` 会先检查 Core 是否已运行，未运行会直接提示并退出
-- 推荐顺序是先启动 Core，再启动调试页
+- Default debug page address: <http://127.0.0.1:8899>
+- `web/server.py` will first check if the Core is running; if not, it will prompt and exit directly.
+- The recommended sequence is to start the Core first, then the debug page.
 
-> 💡 业务正式接入时，推荐让你的 Python / Node.js / Go / Rust 服务常驻连接 Core，再按不同 `session_id` 复用连接；如果用户需要“停止生成”，应由业务服务发送 `run.cancel`，不要让多个最终客户端直接争抢同一个共享 `session`。
+> 💡 For official business integration, it is recommended to keep your Python / Node.js / Go / Rust service persistently connected to the Core, and reuse the connection with different `session_id`s. If a user needs to "stop generating", the business service should send `run.cancel`. Do not let multiple end clients directly compete for the same shared `session`.
 
-## 📦 存储结构与 API
+## 📦 Storage Structure & API
 
 <details>
-<summary><b>📂 查看存储结构</b></summary>
+<summary><b>📂 View Storage Structure</b></summary>
 
-当前优先使用文件式持久化，方便调试与查看全量日志（后续将引入 SQLite 作为主存储）：
+Currently, file-based persistence is prioritized for easy debugging and viewing full logs (SQLite will be introduced as the main storage later):
 
 ```text
 .aicore/
@@ -158,19 +162,19 @@ python3 server.py
 </details>
 
 <details>
-<summary><b>🔌 查看 WebSocket 协议示例</b></summary>
+<summary><b>🔌 View WebSocket Protocol Example</b></summary>
 
-**发送消息**
+**Send Message**
 
 ```json
 {
   "command": "session.send",
   "session_id": "debug",
-  "payload": { "message": "获取当前时间" }
+  "payload": { "message": "Get current time" }
 }
 ```
 
-**注册工具**
+**Register Tool**
 
 ```json
 {
@@ -180,7 +184,7 @@ python3 server.py
 }
 ```
 
-**接收调用与回传结果**
+**Receive Call and Return Result**
 
 ```json
 // Kernel -> Client (Event)
@@ -199,7 +203,7 @@ python3 server.py
 
 </details>
 
-## 📸 调试控制台截图
+## 📸 Debug Console Screenshots
 
 <table>
   <tr>
@@ -214,14 +218,14 @@ python3 server.py
   </tr>
 </table>
 
-## 🗺️ 路线图 & 社区
+## 🗺️ Roadmap & Community
 
-- [ ] 完整的 Context 操作与 Compaction workflow
-- [ ] Tool call ACK / 幂等状态查询
-- [ ] SQLite 主存储与多 client 权限边界
-- [ ] SDK 示例 (JS / Python / Go)
+- [ ] Complete Context operations and Compaction workflow
+- [ ] Tool call ACK / Idempotent state queries
+- [ ] SQLite main storage and multi-client permission boundaries
+- [ ] SDK Examples (JS / Python / Go)
 
-**License:** MIT\
-**社区交流:** QQ群 `250892941`
+**License:** MIT<br>
+**Community Chat:** QQ Group `250892941`
 
 [![Star History Chart](https://api.star-history.com/svg?repos=cih1996/AgentKernel\&type=Date)](https://www.star-history.com/#cih1996/AgentKernel\&Date)
