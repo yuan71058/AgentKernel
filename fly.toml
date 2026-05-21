@@ -1,0 +1,48 @@
+# AgentKernel — Fly.io 部署配置
+app = 'agentkernel'
+primary_region = 'hkg'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[env]
+  PROTOCOL = 'openai'
+  MODEL = 'deepseek-chat'
+  BASE_URL = 'https://api.deepseek.com'
+  DATA_DIR = '/data/.aicore'
+
+# API_KEY 通过 `fly secrets set API_KEY=xxx` 注入，不写在这里
+
+[[mounts]]
+  source = 'agentkernel_data'
+  destination = '/data'
+  initial_size = '256mb'
+
+[[services]]
+  internal_port = 8080
+  protocol = 'tcp'
+
+  [[services.ports]]
+    port = 443
+    handlers = ['tls', 'http']
+
+  [[services.ports]]
+    port = 80
+    handlers = ['http']
+
+# WebSocket 需要更长的超时
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = 'connections'
+    hard_limit = 100
+    soft_limit = 50
+
+[machine]
+  guest_machine_type = 'shared-cpu-1x'
+  guest_memory_mb = 256
