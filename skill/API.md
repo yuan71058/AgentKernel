@@ -876,6 +876,27 @@ async def connect():
 
 > 返回的是简化视图（`message_id/role/kind/text/created_at`），不是完整 Message 结构。
 
+**role 取值**:
+
+| role | 说明 |
+|------|------|
+| `user` | 用户消息 |
+| `assistant` | AI 回复 |
+| `system` | 系统消息 |
+| `tool` | 工具调用结果（由 `tool.execute.result` 回传后写入） |
+
+**kind 取值**:
+
+| kind | 说明 |
+|------|------|
+| `normal` | 普通对话消息 |
+| `tool_result` | 工具执行结果 |
+| `compaction_summary` | 上下文压缩摘要 |
+| `context_seed` | 注入的上下文 Seed |
+| `system_note` | 系统内部备注 |
+
+> **前端注意**: 加载聊天历史时应过滤 `role`，只展示 `user` 和 `assistant`。`tool` 和 `system` 是内部协议消息，不应作为普通对话渲染。
+
 ---
 
 ### 4.15 `session.delete` — 删除 Session

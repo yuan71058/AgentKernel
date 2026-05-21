@@ -75,6 +75,7 @@ createApp({
     const providerStatus = ref('');
     const systemPrompt = ref('');
     const systemPromptStatus = ref('');
+    let _systemPromptAutoApplied = false;
     const contextPreview = ref({});
     const contextStatus = ref('');
     const contextKeepRecent = ref(20);
@@ -97,7 +98,26 @@ createApp({
       max_tokens: 4096,
       temperature: 0.5,
     });
-    const AGENT_TOOL_SYSTEM_PROMPT_TEMPLATE = '你是一个子agent，一次性对话的，不具备连续对话，所以你不能询问用户，如果真的要询问，必须让用户重新详细描述，而非“补充”';
+    const AGENT_TOOL_SYSTEM_PROMPT_TEMPLATE = '你是一个子agent，一次性对话的，不具备连续对话，所以你不能询问用户，如果真的要询问，必须让用户重新详细描述，而非”补充”';
+
+    // 默认系统提示词（自动应用于无自定义提示词的 session）
+    const DEFAULT_SYSTEM_PROMPT = `你是 AgentKernel 调试台的 AI 助手。
+
+你的运行环境：
+- 项目：AgentKernel — 基于 Rust 的 AI Runtime Kernel
+- 项目主页：https://github.com/cih1996/AgentKernel
+- 在线体验：https://cih1996.github.io/AgentKernel/
+- 架构定位：后端内部的 AI 运行时内核，不是对外 API 服务
+
+你的能力：
+- 你拥有内置工具（get_time、calc、fetch_url 等），可以主动使用它们完成任务
+- fetch_url 工具可以访问互联网资源，如获取项目 README、文档等
+- 你可以用 fetch_url 获取项目最新状态：https://raw.githubusercontent.com/cih1996/AgentKernel/refs/heads/main/README.md
+
+行为准则：
+- 用户问关于项目的问题时，优先用 fetch_url 工具获取最新信息，不要只靠训练数据回答
+- 用中文回答
+- 简洁直接，不废话`;
 
     // 流式文本累积
     const streamingText = ref('');
@@ -209,6 +229,49 @@ createApp({
             if (input.action === 'decode') return { ok: true, result: atob(input.text) };
             return { ok: true, result: btoa(input.text) };
           } catch(e) { return { ok: false, result: e.message }; }
+        }
+      },
+      {
+        name: 'fetch_url',
+        description: '通过 HTTP GET 获取指定 URL 的内容（纯文本）。支持 raw.githubusercontent.com 等无跨域限制的资源。可用于获取项目文档、JSON 数据、公开 API 等。',
+        schema: {
+          type: 'object',
+          properties: {
+            url: { type: 'string', description: '要获取的 URL 地址' },
+            max_length: { type: 'integer', description: '返回内容最大字符数，默认 8000', default: 8000 }
+          },
+          required: ['url']
+        },
+        tags: ['builtin', 'network'],
+        async execute(input) {
+          const url = String(input.url || '').trim();
+          if (!url) return { ok: false, result: '缺少 url 参数' };
+          const maxLength = input.max_length || 8000;
+          try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 15000);
+            const resp = await fetch(url, {
+              signal: controller.signal,
+              headers: { 'Accept': 'text/plain, text/html, application/json, */*' }
+            });
+            clearTimeout(timer);
+            if (!resp.ok) {
+              return { ok: false, result: `HTTP ${resp.status} ${resp.statusText} — 请求失败: ${url}` };
+            }
+            let text = await resp.text();
+            let truncated = false;
+            if (text.length > maxLength) {
+              text = text.slice(0, maxLength);
+              truncated = true;
+            }
+            const suffix = truncated ? `\n\n[内容已截断，原始长度超过 ${maxLength} 字符]` : '';
+            return { ok: true, result: text + suffix };
+          } catch (e) {
+            const msg = e.name === 'AbortError'
+              ? `请求超时（15秒）: ${url}`
+              : `请求失败: ${e.message}`;
+            return { ok: false, result: msg };
+          }
         }
       },
       {
@@ -537,6 +600,21 @@ createApp({
               ? `已保存 (${msg.payload.is_session_override ? 'Session 覆盖' : '全局默认'})`
               : `已读取 (${msg.payload.is_session_override ? 'Session 覆盖' : '全局默认'})`;
             setTimeout(() => systemPromptStatus.value = '', 4000);
+            // 自动设置默认提示词：session 无自定义提示词且尚未自动设置过
+            if (!msg.payload.updated && !msg.payload.is_session_override && !systemPrompt.value && !_systemPromptAutoApplied) {
+              _systemPromptAutoApplied = true;
+              systemPrompt.value = DEFAULT_SYSTEM_PROMPT;
+              const autoRid = nextReqId();
+              const autoMsg = {
+                command: 'system_prompt.set',
+                request_id: autoRid,
+                session_id: respSessionId,
+                payload: { system_prompt: DEFAULT_SYSTEM_PROMPT },
+              };
+              const autoOut = JSON.stringify(autoMsg);
+              ws.send(autoOut);
+              addRawMessage('out', autoOut);
+            }
           }
           if (respCmd === 'session.messages.full') {
             fullMessagesLoading.value = false;
@@ -701,8 +779,10 @@ createApp({
               fullMessagesLoading.value = false;
               setTimeout(() => fullMessages.value.forEach(m => m._new = false), 800);
             } else if (msgs.length > 0) {
-              const mappedMessages = msgs.map(m => ({
-                role: m.role === 'assistant' ? 'assistant' : m.role === 'user' ? 'user' : 'system',
+              const mappedMessages = msgs
+                .filter(m => m.role === 'user' || m.role === 'assistant')
+                .map(m => ({
+                role: m.role,
                 text: extractHistoryMessageText(m),
                 meta: m.created_at ? new Date(m.created_at).toLocaleTimeString('zh-CN', {hour12:false}) : '',
               })).filter(m => m.text);
@@ -1090,6 +1170,7 @@ createApp({
 
     function loadSystemPrompt() {
       if (!ws) return;
+      _systemPromptAutoApplied = false;
       const rid = nextReqId();
       const msg = {
         command: 'system_prompt.get',
