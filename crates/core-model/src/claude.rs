@@ -31,6 +31,15 @@ impl ProviderAdapter for ClaudeAdapter {
             ..Default::default()
         };
 
+        // Claude 不支持音频输入
+        for msg in &prepared.sanitized_messages {
+            for block in &msg.content {
+                if let ContentBlock::Audio { .. } = block {
+                    return Err("Claude API 不支持音频输入（Audio）。请使用支持音频的供应商（如本地 llama-server）或先将音频转为文字。".to_string());
+                }
+            }
+        }
+
         let normalized = normalize_for_claude(&prepared);
 
         let mut body = serde_json::json!({
@@ -98,6 +107,15 @@ impl ProviderAdapter for ClaudeAdapter {
             tool_chain_report: Some(prepared.tool_chain_report.clone()),
             ..Default::default()
         };
+
+        // Claude 不支持音频输入
+        for msg in &prepared.sanitized_messages {
+            for block in &msg.content {
+                if let ContentBlock::Audio { .. } = block {
+                    return Err("Claude API 不支持音频输入（Audio）。请使用支持音频的供应商（如本地 llama-server）或先将音频转为文字。".to_string());
+                }
+            }
+        }
 
         let normalized = normalize_for_claude(&prepared);
         let mut body = serde_json::json!({

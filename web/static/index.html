@@ -532,6 +532,21 @@
                 </div>
               </div>
 
+              <div class="config-row-group" style="margin-top:8px">
+                <div class="config-row">
+                  <label style="display:flex;align-items:center;gap:8px">
+                    <input type="checkbox" v-model="providerConfig.supports_image">
+                    支持图片输入
+                  </label>
+                </div>
+                <div class="config-row">
+                  <label style="display:flex;align-items:center;gap:8px">
+                    <input type="checkbox" v-model="providerConfig.supports_audio">
+                    支持音频输入
+                  </label>
+                </div>
+              </div>
+
               <div class="config-actions">
                 <button class="btn btn-connect" @click="saveProvider" :disabled="!connected">保存到 Session</button>
                 <button class="btn" @click="loadProvider" :disabled="!connected">读取当前</button>
@@ -626,8 +641,47 @@
             <template v-for="(m, i) in chatMessages" :key="i">
               <div class="msg-wrapper" :class="m.role">
                 <div class="msg" :class="'msg-' + m.role">
+                  <!-- 用户消息中的图片展示 -->
+                  <template v-if="m.role === 'user' && m.images && m.images.length > 0">
+                    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">
+                      <img v-for="(img, ii) in m.images" :key="ii" :src="img.dataUrl" :title="img.name"
+                           style="max-width:200px;max-height:160px;border-radius:6px;border:1px solid var(--border);cursor:pointer"
+                           onclick="window.open(this.src, '_blank')">
+                    </div>
+                  </template>
+                  <!-- 用户消息中的音频展示 -->
+                  <template v-if="m.role === 'user' && m.audioFiles && m.audioFiles.length > 0">
+                    <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px">
+                      <div v-for="(af, ai) in m.audioFiles" :key="ai" style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);font-size:12px">
+                        <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+                        <span>{{ af.name }}</span>
+                        <span v-if="af.duration > 0" style="color:var(--text3)">{{ formatDuration(af.duration) }}</span>
+                        <audio v-if="af.dataUrl" :src="af.dataUrl" controls style="height:28px;flex:1;min-width:120px"></audio>
+                      </div>
+                    </div>
+                  </template>
                   <div v-if="m.role === 'assistant'" class="markdown-body" v-html="renderMarkdown(m.text)"></div>
+                  <div v-else-if="m.role === 'tool'" style="white-space:pre-wrap;font-size:12px;color:var(--text3)">{{ m.text }}</div>
                   <div v-else style="white-space:pre-wrap">{{ m.text }}</div>
+                  <!-- 工具调用卡片 -->
+                  <template v-if="m.toolCalls && m.toolCalls.length > 0">
+                    <div v-for="tc in m.toolCalls" :key="tc.id" style="margin-top:8px;border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:12px;background:var(--bg2)">
+                      <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+                        <span style="font-weight:600;color:var(--accent)">{{ tc.name }}</span>
+                        <span v-if="tc.status==='pending'" style="color:var(--text3)">⏳ 等待结果...</span>
+                        <span v-else-if="tc.status==='done'" style="color:#4caf50">✅ 完成</span>
+                        <span v-else-if="tc.status==='error'" style="color:#f44336">❌ 失败</span>
+                      </div>
+                      <div v-if="tc.input && Object.keys(tc.input).length > 0" style="margin-bottom:4px">
+                        <div style="color:var(--text3);cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">▸ 输入参数</div>
+                        <pre style="display:none;margin:4px 0 0;padding:6px;background:var(--bg);border-radius:4px;overflow-x:auto;white-space:pre-wrap;word-break:break-all">{{ JSON.stringify(tc.input, null, 2) }}</pre>
+                      </div>
+                      <div v-if="tc.result !== null">
+                        <div style="color:var(--text3);cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">▸ 返回结果</div>
+                        <pre style="display:none;margin:4px 0 0;padding:6px;background:var(--bg);border-radius:4px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;max-height:200px;overflow-y:auto">{{ tc.result }}</pre>
+                      </div>
+                    </div>
+                  </template>
                 </div>
                 <div class="msg-meta" v-if="m.meta">{{ m.meta }}</div>
               </div>
@@ -651,11 +705,50 @@
                 <div class="msg-meta">生成中...</div>
               </div>
             </template>
+            <!-- 运行中指示器（刷新后恢复状态） -->
+            <template v-if="!isStreaming && currentRunId && ['pending','running','streaming'].includes(currentRunStatus)">
+              <div class="msg-wrapper assistant">
+                <div class="msg msg-assistant" style="opacity:0.7">
+                  <span class="cursor-blink"></span> AI 正在执行中...（run: {{ currentRunId.slice(0, 12) }}...）
+                </div>
+                <div class="msg-meta">页面刷新后恢复的运行状态</div>
+              </div>
+            </template>
           </div>
           
           <div class="chat-input-wrapper">
+            <!-- 图片待发区 -->
+            <div v-if="pendingImages.length > 0" style="display:flex;flex-wrap:wrap;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--bg2)">
+              <div v-for="img in pendingImages" :key="img.id" style="position:relative;width:64px;height:64px;border-radius:6px;overflow:hidden;border:1px solid var(--border);flex-shrink:0">
+                <img :src="img.dataUrl" style="width:100%;height:100%;object-fit:cover" :title="img.name">
+                <div @click="removePendingImage(img.id)" style="position:absolute;top:0;right:0;width:18px;height:18px;background:rgba(0,0,0,0.7);color:#fff;font-size:12px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:0 0 0 4px" title="移除">×</div>
+              </div>
+              <div @click="clearPendingImages" style="width:64px;height:64px;border-radius:6px;border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text3);font-size:11px" title="清空全部">清空</div>
+            </div>
+            <!-- 音频待发区 -->
+            <div v-if="pendingAudio.length > 0" style="display:flex;flex-wrap:wrap;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--bg2)">
+              <div v-for="a in pendingAudio" :key="a.id" style="position:relative;display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);flex-shrink:0;font-size:11px">
+                <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+                <span style="max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="a.name">{{ a.name }}</span>
+                <span v-if="a.duration > 0" style="color:var(--text3)">{{ formatDuration(a.duration) }}</span>
+                <span style="color:var(--text3)">{{ a.format }}</span>
+                <div @click="removePendingAudio(a.id)" style="cursor:pointer;color:var(--text3);font-size:13px;margin-left:2px" title="移除">×</div>
+              </div>
+              <div @click="clearPendingAudio" style="padding:6px 10px;border-radius:6px;border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text3);font-size:11px" title="清空全部">清空</div>
+            </div>
+            <input type="file" id="image-file-input" accept="image/*" multiple style="display:none" @change="handleFileSelect">
+            <input type="file" id="audio-file-input" accept="audio/*" multiple style="display:none" @change="handleAudioFileSelect">
             <div class="chat-input">
-              <input v-model="chatInput" placeholder="输入消息... (Enter 发送)" @keyup.enter="sendChat" :disabled="!connected">
+              <button class="btn" @click="triggerFileSelect" :disabled="!connected" title="选择图片" style="padding:6px 8px;flex-shrink:0;font-size:12px">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+              </button>
+              <button class="btn" @click="triggerAudioFileSelect" :disabled="!connected" title="选择音频文件" style="padding:6px 8px;flex-shrink:0;font-size:12px">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+              </button>
+              <button class="btn" @click="toggleRecording" :disabled="!connected" :title="isRecording ? '停止录音' : '开始录音'" style="padding:6px 8px;flex-shrink:0;font-size:12px" :style="isRecording ? 'color:var(--red);animation:pulse 1s infinite' : ''">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="6" :fill="isRecording ? 'var(--red)' : 'none'"></circle></svg>
+              </button>
+              <input v-model="chatInput" placeholder="输入消息... (Enter 发送，可粘贴图片)" @keyup.enter="sendChat" @paste="handlePaste" :disabled="!connected">
               <button class="btn" @click="cancelCurrentRun" :disabled="!connected || !currentRunId || !['pending','running','streaming','cancelling'].includes(currentRunStatus)" title="停止当前生成">
                 停止
               </button>
@@ -665,7 +758,7 @@
               <button class="btn" @click="insertChatMessage('assistant')" :disabled="!connected || !chatInput.trim()" title="插入为助手消息（不触发推理）" style="font-size:11px;opacity:0.7">
                 插入助手
               </button>
-              <button class="btn btn-send" @click="sendChat" :disabled="!connected || !chatInput.trim()">
+              <button class="btn btn-send" @click="sendChat" :disabled="!connected || (!chatInput.trim() && pendingImages.length === 0 && pendingAudio.length === 0)">
                 <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
               </button>
             </div>

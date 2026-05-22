@@ -214,6 +214,7 @@ textarea.config-input { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco
 /* Streaming cursor */
 .cursor-blink { animation: blink 1s step-end infinite; color: inherit; display: inline-block; width: 6px; height: 14px; background: currentColor; vertical-align: middle; margin-left: 2px; }
 @keyframes blink { 50% { opacity: 0; } }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 
 /* Raw input at bottom */
 .raw-input { display: flex; gap: 10px; padding: 12px 16px; background: var(--bg); border-top: 1px solid var(--border); z-index: 2; box-shadow: 0 -4px 6px -1px rgba(0,0,0,0.02); }

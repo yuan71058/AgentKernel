@@ -231,10 +231,41 @@ async def connect():
 | payload 字段 | 类型 | 必填 | 说明 |
 |--------------|------|------|------|
 | `message` | string | **是** | 用户输入文本 |
-| `images` | string[] | 否 | Base64 图像列表 |
+| `images` | string[] | 否 | 图像列表，每项为纯 Base64 字符串或 `data:image/png;base64,xxx` 格式均支持；Runtime 自动解析并转为 `ContentBlock::Image` 持久化。需要模型本身支持视觉（如 GPT-4o、Claude 3.5 Sonnet 等） |
+| `audio` | object[] | 否 | 音频列表，每项含 `data`（base64 字符串）和 `format`（`"wav"` 或 `"mp3"`，默认 `"wav"`）。仅 OpenAI 协议支持，Claude 协议会返回不支持错误。需模型本身支持音频（如 Gemma 4 + mmproj） |
 | `max_repeated_tool_calls` | u32 | 否 | 连续相同工具调用检测阈值，默认 10；仅防死循环，不限制总调用次数 |
 
-> **注意**: payload 中的字段名是 `message`，不是 `content`。
+> **注意**: payload 中的字段名是 `message`，不是 `content`。`message`、`images`、`audio` 可以同时传。
+
+**带图片的请求示例**:
+```json
+{
+  "command": "session.send",
+  "request_id": "r_img1",
+  "session_id": "my_session",
+  "payload": {
+    "message": "这张图片里是什么？",
+    "images": ["iVBORw0KGgo..."]
+  }
+}
+```
+
+**带音频的请求示例**:
+```json
+{
+  "command": "session.send",
+  "request_id": "r_audio1",
+  "session_id": "my_session",
+  "payload": {
+    "message": "这段音频说了什么？",
+    "audio": [{"data": "UklGRi...", "format": "wav"}]
+  }
+}
+```
+
+> **并发限制**: 同一 session 同时只能有一个活跃 run。如果 session 已有 run 在执行，再次调用 `session.send` 会返回错误，包含当前活跃的 `run_id`。业务端需自行排队：等收到 `run.completed` / `run.cancelled` 事件后再发送下一条。`session.message.insert` 不受此限制，运行中可安全调用。
+
+> **能力校验**: 如果发送了图片或音频，但当前 session 的供应商配置中 `supports_image=false` 或 `supports_audio=false`，Core 会在推理前直接返回 `provider.capability` 错误，不会发给模型。请先在供应商设置中开启对应能力开关。
 
 **成功响应**（已验证）:
 
@@ -401,6 +432,8 @@ async def connect():
 | `model` | string | 否 | 模型名 |
 | `max_tokens` | u64 | 否 | 最大生成 token 数 |
 | `temperature` | f64 | 否 | 温度参数 |
+| `supports_image` | bool | 否 | 是否支持图片输入（默认 false）；开启后发送图片会校验此标志，不支持则提前报错 |
+| `supports_audio` | bool | 否 | 是否支持音频输入（默认 false）；开启后发送音频会校验此标志，不支持则提前报错 |
 
 **成功响应**（已验证）:
 
@@ -416,7 +449,9 @@ async def connect():
       "max_tokens": 4096,
       "model": "deepseek-reasoner",
       "protocol": "claude",
-      "temperature": 0.0
+      "temperature": 0.0,
+      "supports_image": false,
+      "supports_audio": false
     }
   }
 }
@@ -924,14 +959,14 @@ async def connect():
     "total": 4,
     "pages": 1,
     "messages": [
-      { "message_id": "msg_1", "role": "user", "kind": "normal", "text": "你好", "created_at": "..." },
-      { "message_id": "msg_2", "role": "assistant", "kind": "normal", "text": "你好！", "created_at": "..." }
+      { "message_id": "msg_1", "role": "user", "kind": "normal", "text": "你好", "content": [{"type":"text","text":"你好"}], "created_at": "..." },
+      { "message_id": "msg_2", "role": "assistant", "kind": "normal", "text": "你好！", "content": [{"type":"text","text":"你好！"}], "created_at": "..." }
     ]
   }
 }
 ```
 
-> 返回的是简化视图（`message_id/role/kind/text/created_at`），不是完整 Message 结构。
+> 每条消息包含 `text`（纯文本摘要，跳过 ToolUse 块）和 `content`（完整内容块数组，含 tool_use / tool_result 等结构化数据）。前端渲染工具调用时应使用 `content` 字段。
 
 **role 取值**:
 
@@ -952,7 +987,7 @@ async def connect():
 | `context_seed` | 注入的上下文 Seed |
 | `system_note` | 系统内部备注 |
 
-> **前端注意**: 加载聊天历史时应过滤 `role`，只展示 `user` 和 `assistant`。`tool` 和 `system` 是内部协议消息，不应作为普通对话渲染。
+> **前端注意**: 加载聊天历史时，`user` 和 `assistant` 消息中的 `content` 数组可能包含 `tool_use` 和 `tool_result` 块，应结构化渲染而非只显示 `text`。`system` 和 `tool` role 的消息通常不作为普通对话展示。
 
 ---
 

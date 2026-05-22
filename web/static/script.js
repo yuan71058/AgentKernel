@@ -37,6 +37,11 @@ createApp({
     const sessionId = ref('debug_session');
     const chatInput = ref('');
     const chatMessages = ref([]);
+    const pendingImages = ref([]); // [{id, name, dataUrl, base64, mediaType}]
+    const pendingAudio = ref([]); // [{id, name, dataUrl, base64, format, duration}]
+    const isRecording = ref(false);
+    let _mediaRecorder = null;
+    let _recordedChunks = [];
     const sessions = ref([]);
     const selectedSessionId = ref('');
     const events = ref([]);
@@ -71,6 +76,8 @@ createApp({
       model: 'deepseek-chat',
       max_tokens: 4096,
       temperature: 0,
+      supports_image: false,
+      supports_audio: false,
     });
     const providerStatus = ref('');
     const systemPrompt = ref('');
@@ -503,6 +510,7 @@ createApp({
         loadTools();
         loadContextPreview();
         loadRuntimeSessions();
+        loadRuntimeSessions();
       };
       ws.onclose = () => {
         pendingCommandWaiters.forEach(waiter => {
@@ -584,6 +592,8 @@ createApp({
             providerConfig.value.model = p.model || '';
             providerConfig.value.max_tokens = p.max_tokens || 4096;
             providerConfig.value.temperature = p.temperature || 0;
+            providerConfig.value.supports_image = !!p.supports_image;
+            providerConfig.value.supports_audio = !!p.supports_audio;
             providerStatus.value = `已读取 (${msg.payload.is_override ? 'Session 覆盖' : '全局默认'})`;
             setTimeout(() => providerStatus.value = '', 4000);
           }
@@ -779,13 +789,93 @@ createApp({
               fullMessagesLoading.value = false;
               setTimeout(() => fullMessages.value.forEach(m => m._new = false), 800);
             } else if (msgs.length > 0) {
-              const mappedMessages = msgs
-                .filter(m => m.role === 'user' || m.role === 'assistant')
-                .map(m => ({
-                role: m.role,
-                text: extractHistoryMessageText(m),
-                meta: m.created_at ? new Date(m.created_at).toLocaleTimeString('zh-CN', {hour12:false}) : '',
-              })).filter(m => m.text);
+              const mappedMessages = [];
+              for (const m of msgs) {
+                if (m.role !== 'user' && m.role !== 'assistant') continue;
+                const meta = m.created_at ? new Date(m.created_at).toLocaleTimeString('zh-CN', {hour12:false}) : '';
+                const content = Array.isArray(m.content) ? m.content : [];
+
+                // 检测是否包含 tool_use / tool_result / image
+                const toolUses = content.filter(c => c && c.type === 'tool_use');
+                const toolResults = content.filter(c => c && c.type === 'tool_result');
+                const textBlocks = content.filter(c => c && c.type === 'text');
+                const imageBlocks = content.filter(c => c && c.type === 'image');
+                const audioBlocks = content.filter(c => c && c.type === 'audio');
+                const textContent = textBlocks.map(c => c.text || '').join('').trim() || m.text || '';
+
+                // 构建图片数据（历史图片用 dataUrl 格式）
+                const historyImages = imageBlocks.map(ib => {
+                  const src = ib.source || {};
+                  const mediaType = src.media_type || 'image/png';
+                  const data = src.data || '';
+                  return {
+                    name: 'image',
+                    dataUrl: `data:${mediaType};base64,${data}`,
+                  };
+                });
+
+                // 构建音频数据（历史音频用 dataUrl 格式）
+                const historyAudio = audioBlocks.map(ab => {
+                  const src = ab.source || {};
+                  const format = src.format || 'wav';
+                  const data = src.data || '';
+                  const mimeMap = { wav: 'audio/wav', mp3: 'audio/mpeg', ogg: 'audio/ogg', webm: 'audio/webm', mp4: 'audio/mp4' };
+                  const mime = mimeMap[format] || 'audio/wav';
+                  return {
+                    name: `audio.${format}`,
+                    dataUrl: `data:${mime};base64,${data}`,
+                    format,
+                    duration: 0,
+                  };
+                });
+
+                if (toolUses.length > 0) {
+                  // assistant 消息含 tool_use：渲染文本 + 工具调用卡片
+                  mappedMessages.push({
+                    role: 'assistant',
+                    text: textContent,
+                    meta,
+                    toolCalls: toolUses.map(tu => ({
+                      id: tu.id, name: tu.name, input: tu.input || {},
+                      result: null, isError: false, status: 'pending',
+                    })),
+                  });
+                } else if (toolResults.length > 0) {
+                  // tool_result 消息：合并到对应的 toolCall 卡片上
+                  for (const tr of toolResults) {
+                    // 从后往前找最近的有匹配 id 的 assistant 消息
+                    let found = false;
+                    for (let j = mappedMessages.length - 1; j >= 0; j--) {
+                      const prev = mappedMessages[j];
+                      if (prev.toolCalls) {
+                        const tc = prev.toolCalls.find(t => t.id === tr.tool_use_id);
+                        if (tc) {
+                          tc.result = tr.content || '';
+                          tc.isError = !!tr.is_error;
+                          tc.status = tr.is_error ? 'error' : 'done';
+                          found = true;
+                          break;
+                        }
+                      }
+                    }
+                    if (!found) {
+                      // 找不到对应的 tool_use（异常情况），单独显示
+                      mappedMessages.push({
+                        role: 'tool',
+                        text: tr.content || '',
+                        meta,
+                        toolResult: { toolUseId: tr.tool_use_id, isError: !!tr.is_error },
+                      });
+                    }
+                  }
+                } else if (textContent || historyImages.length > 0 || historyAudio.length > 0) {
+                  // 普通文本消息（可能含图片/音频）
+                  const entry = { role: m.role, text: textContent, meta };
+                  if (historyImages.length > 0) entry.images = historyImages;
+                  if (historyAudio.length > 0) entry.audioFiles = historyAudio;
+                  mappedMessages.push(entry);
+                }
+              }
               chatMessages.value = mappedMessages;
               scrollToChat();
               const loadedCount = msgs.length;
@@ -1200,9 +1290,17 @@ createApp({
     }
 
     function sendChat() {
-      if (!ws || !chatInput.value.trim()) return;
       const text = chatInput.value.trim();
-      chatMessages.value.push({ role: 'user', text, meta: now() });
+      const images = pendingImages.value;
+      const audio = pendingAudio.value;
+      if (!ws || (!text && images.length === 0 && audio.length === 0)) return;
+
+      // 构建聊天区域显示
+      const meta = now();
+      const msgEntry = { role: 'user', text, meta };
+      if (images.length > 0) msgEntry.images = images.map(img => ({ name: img.name, dataUrl: img.dataUrl }));
+      if (audio.length > 0) msgEntry.audioFiles = audio.map(a => ({ name: a.name, dataUrl: a.dataUrl, format: a.format, duration: a.duration }));
+      chatMessages.value.push(msgEntry);
       chatInput.value = '';
       currentRunId.value = '';
       currentRunStatus.value = 'pending';
@@ -1212,15 +1310,20 @@ createApp({
       scrollToChat();
 
       const rid = nextReqId();
+      const payload = { message: text };
+      if (images.length > 0) payload.images = images.map(img => img.base64);
+      if (audio.length > 0) payload.audio = audio.map(a => ({ data: a.base64, format: a.format }));
       const fullMsg = {
         command: 'session.send',
         request_id: rid,
         session_id: sessionId.value,
-        payload: { message: text }
+        payload,
       };
       const out = JSON.stringify(fullMsg);
       ws.send(out);
       addRawMessage('out', out);
+      pendingImages.value = [];
+      pendingAudio.value = [];
       loadRuntimeSessions();
     }
 
@@ -1237,10 +1340,256 @@ createApp({
       const out = JSON.stringify(fullMsg);
       ws.send(out);
       addRawMessage('out', out);
-      // 在聊天区域显示一条本地提示
       chatMessages.value.push({ role, text, meta: now() + ' [已插入]' });
       chatInput.value = '';
       scrollToChat();
+    }
+
+    // ─── 图片管理 ───────────────────────────────
+    let _imageIdSeq = 0;
+
+    function addImageFiles(files) {
+      for (const file of files) {
+        if (!file.type.startsWith('image/')) continue;
+        if (file.size > 10 * 1024 * 1024) {
+          addLocalNotice('图片', `${file.name} 超过 10MB，已跳过`);
+          continue;
+        }
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const dataUrl = e.target.result;
+          // data:image/png;base64,xxxxx → 提取纯 base64
+          const commaIdx = dataUrl.indexOf(',');
+          const header = dataUrl.substring(0, commaIdx);
+          const base64 = dataUrl.substring(commaIdx + 1);
+          const mediaType = header.split(':')[1]?.split(';')[0] || 'image/png';
+          pendingImages.value.push({
+            id: ++_imageIdSeq,
+            name: file.name,
+            dataUrl,
+            base64,
+            mediaType,
+          });
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+
+    function removePendingImage(id) {
+      pendingImages.value = pendingImages.value.filter(img => img.id !== id);
+    }
+
+    function clearPendingImages() {
+      pendingImages.value = [];
+    }
+
+    function handlePaste(e) {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const imageFiles = [];
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          const file = item.getAsFile();
+          if (file) imageFiles.push(file);
+        }
+      }
+      if (imageFiles.length > 0) {
+        e.preventDefault();
+        addImageFiles(imageFiles);
+      }
+    }
+
+    function handleFileSelect(e) {
+      const files = e.target.files;
+      if (files && files.length > 0) {
+        addImageFiles(files);
+      }
+      e.target.value = ''; // 重置 input 允许重复选同一文件
+    }
+
+    function triggerFileSelect() {
+      document.getElementById('image-file-input')?.click();
+    }
+
+    // ─── 音频管理 ───────────────────────────────
+    let _audioIdSeq = 0;
+    const AUDIO_FORMAT_MAP = { 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/wave': 'wav', 'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/ogg': 'ogg', 'audio/webm': 'webm', 'audio/mp4': 'mp4', 'audio/m4a': 'mp4', 'audio/aac': 'aac' };
+
+    // AudioBuffer → WAV (PCM 16-bit) 编码器
+    function audioBufferToWav(buffer) {
+      const numChannels = buffer.numberOfChannels;
+      const sampleRate = buffer.sampleRate;
+      const format = 1; // PCM
+      const bitDepth = 16;
+      const bytesPerSample = bitDepth / 8;
+      const blockAlign = numChannels * bytesPerSample;
+      const dataLength = buffer.length * blockAlign;
+      const headerLength = 44;
+      const totalLength = headerLength + dataLength;
+      const arrayBuffer = new ArrayBuffer(totalLength);
+      const view = new DataView(arrayBuffer);
+
+      // 交错合并多声道
+      let channels = [];
+      for (let i = 0; i < numChannels; i++) channels.push(buffer.getChannelData(i));
+
+      // WAV header
+      function writeString(offset, str) { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); }
+      writeString(0, 'RIFF');
+      view.setUint32(4, totalLength - 8, true);
+      writeString(8, 'WAVE');
+      writeString(12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, format, true);
+      view.setUint16(22, numChannels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * blockAlign, true);
+      view.setUint16(32, blockAlign, true);
+      view.setUint16(34, bitDepth, true);
+      writeString(36, 'data');
+      view.setUint32(40, dataLength, true);
+
+      // PCM samples
+      let offset = 44;
+      for (let i = 0; i < buffer.length; i++) {
+        for (let ch = 0; ch < numChannels; ch++) {
+          let sample = Math.max(-1, Math.min(1, channels[ch][i]));
+          sample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+          view.setInt16(offset, sample, true);
+          offset += 2;
+        }
+      }
+      return arrayBuffer;
+    }
+
+    function addAudioFiles(files) {
+      for (const file of files) {
+        if (!file.type.startsWith('audio/')) continue;
+        if (file.size > 25 * 1024 * 1024) {
+          addLocalNotice('音频', `${file.name} 超过 25MB，已跳过`);
+          continue;
+        }
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const dataUrl = e.target.result;
+          const commaIdx = dataUrl.indexOf(',');
+          const base64 = dataUrl.substring(commaIdx + 1);
+          const format = AUDIO_FORMAT_MAP[file.type] || file.name.split('.').pop() || 'wav';
+          // 创建一个 audio 元素来获取时长
+          const audioEl = new Audio(dataUrl);
+          audioEl.addEventListener('loadedmetadata', () => {
+            pendingAudio.value.push({
+              id: ++_audioIdSeq,
+              name: file.name,
+              dataUrl,
+              base64,
+              format,
+              duration: audioEl.duration,
+            });
+          });
+          // 如果 metadata 加载失败也添加
+          audioEl.addEventListener('error', () => {
+            pendingAudio.value.push({
+              id: ++_audioIdSeq,
+              name: file.name,
+              dataUrl,
+              base64,
+              format,
+              duration: 0,
+            });
+          });
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+
+    function removePendingAudio(id) {
+      pendingAudio.value = pendingAudio.value.filter(a => a.id !== id);
+    }
+
+    function clearPendingAudio() {
+      pendingAudio.value = [];
+    }
+
+    function triggerAudioFileSelect() {
+      document.getElementById('audio-file-input')?.click();
+    }
+
+    function handleAudioFileSelect(e) {
+      const files = e.target.files;
+      if (files && files.length > 0) {
+        addAudioFiles(files);
+      }
+      e.target.value = '';
+    }
+
+    async function toggleRecording() {
+      if (isRecording.value) {
+        // 停止录音
+        if (_mediaRecorder && _mediaRecorder.state !== 'inactive') {
+          _mediaRecorder.stop();
+        }
+        return;
+      }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // 优先选 wav，回退到可用格式
+        const mimeType = MediaRecorder.isTypeSupported('audio/wav') ? 'audio/wav'
+          : MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
+          : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm'
+          : 'audio/ogg';
+        const format = AUDIO_FORMAT_MAP[mimeType] || 'webm';
+        _mediaRecorder = new MediaRecorder(stream, { mimeType });
+        _recordedChunks = [];
+        isRecording.value = true;
+
+        _mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) _recordedChunks.push(e.data);
+        };
+
+        _mediaRecorder.onstop = async () => {
+          isRecording.value = false;
+          stream.getTracks().forEach(t => t.stop());
+          const blob = new Blob(_recordedChunks, { type: mimeType });
+          if (blob.size === 0) return;
+          try {
+            // 用 Web Audio API 解码，再编码为 WAV
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const arrayBuf = await blob.arrayBuffer();
+            const audioBuffer = await audioCtx.decodeAudioData(arrayBuf);
+            const wavBuf = audioBufferToWav(audioBuffer);
+            const wavBlob = new Blob([wavBuf], { type: 'audio/wav' });
+            const reader = new FileReader();
+            reader.onload = (e) => {
+              const dataUrl = e.target.result;
+              const commaIdx = dataUrl.indexOf(',');
+              const base64 = dataUrl.substring(commaIdx + 1);
+              pendingAudio.value.push({
+                id: ++_audioIdSeq,
+                name: `录音_${new Date().toLocaleTimeString('zh-CN', {hour12:false}).replace(/:/g,'')}.wav`,
+                dataUrl,
+                base64,
+                format: 'wav',
+                duration: audioBuffer.duration,
+              });
+            };
+            reader.readAsDataURL(wavBlob);
+          } catch (err) {
+            addLocalNotice('录音', '音频转换失败: ' + err.message);
+          }
+        };
+
+        _mediaRecorder.start();
+      } catch (err) {
+        addLocalNotice('录音', '无法访问麦克风: ' + err.message);
+      }
+    }
+
+    function formatDuration(seconds) {
+      if (!seconds || seconds <= 0) return '';
+      const m = Math.floor(seconds / 60);
+      const s = Math.floor(seconds % 60);
+      return `${m}:${String(s).padStart(2, '0')}`;
     }
 
     function cancelCurrentRun() {
@@ -1852,10 +2201,10 @@ createApp({
 
     function applyTemplate(name) {
       const templates = {
-        deepseek: { protocol: 'openai', base_url: 'https://api.deepseek.com', model: 'deepseek-chat', max_tokens: 4096, temperature: 0 },
-        openai:   { protocol: 'openai', base_url: 'https://api.openai.com', model: 'gpt-4o', max_tokens: 4096, temperature: 0 },
-        claude:   { protocol: 'claude', base_url: 'https://ai.accbot.vip', model: 'claude-sonnet-4-20250514', max_tokens: 4096, temperature: 0 },
-        ollama:   { protocol: 'openai', base_url: 'http://localhost:11434', model: 'qwen2.5:7b', max_tokens: 4096, temperature: 0 },
+        deepseek: { protocol: 'openai', base_url: 'https://api.deepseek.com', model: 'deepseek-chat', max_tokens: 4096, temperature: 0, supports_image: false, supports_audio: false },
+        openai:   { protocol: 'openai', base_url: 'https://api.openai.com', model: 'gpt-4o', max_tokens: 4096, temperature: 0, supports_image: true, supports_audio: true },
+        claude:   { protocol: 'claude', base_url: 'https://ai.accbot.vip', model: 'claude-sonnet-4-20250514', max_tokens: 4096, temperature: 0, supports_image: true, supports_audio: false },
+        ollama:   { protocol: 'openai', base_url: 'http://localhost:11434', model: 'qwen2.5:7b', max_tokens: 4096, temperature: 0, supports_image: false, supports_audio: false },
       };
       const t = templates[name];
       if (t) {
@@ -1876,7 +2225,7 @@ createApp({
       wsUrl, connected, connectionId, sessionId,
       wsDropdownOpen, wsCustomMode, wsPresets, wsSelectLabel, selectWsPreset,
       selectedSessionId, sessions,
-      chatInput, chatMessages,
+      chatInput, chatMessages, pendingImages, pendingAudio, isRecording,
       fullMessages, fullMessagesPage, fullMessagesTotal, fullMessagesHasMore, fullMessagesLoading,
       runtimeSessions, runtimeRuns, runtimeRuntimeStatus, runtimeLoading,
       events, rawMessages, tools, toolExecLog, presetTools,
@@ -1902,6 +2251,8 @@ createApp({
       loadFullMessages, onFullMessagesScroll, roleLabel, roleColor, formatMessageTime,
       filteredEvents, filteredRaw, statsExpanded, showPresetToolsModal, renderMarkdown,
       showApiKey, formatTimeoutLabel, askUserQuestionState,
+      addImageFiles, removePendingImage, clearPendingImages, handlePaste, handleFileSelect, triggerFileSelect,
+      addAudioFiles, removePendingAudio, clearPendingAudio, triggerAudioFileSelect, handleAudioFileSelect, toggleRecording, formatDuration,
     };
   }
 }).mount('#app');

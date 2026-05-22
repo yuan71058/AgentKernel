@@ -262,11 +262,31 @@ pub fn convert_for_openai(input: &PreparedModelInput) -> Vec<serde_json::Value> 
                 }
             }
             Role::User => {
-                let mut text_parts = Vec::new();
+                let mut content_parts = Vec::new();
                 let mut tool_results = Vec::new();
+                let mut has_multimodal = false;
                 for c in &msg.content {
                     match c {
-                        ContentBlock::Text { text, .. } => text_parts.push(text.clone()),
+                        ContentBlock::Text { text, .. } => content_parts.push(serde_json::json!({"type": "text", "text": text})),
+                        ContentBlock::Image { source } => {
+                            has_multimodal = true;
+                            content_parts.push(serde_json::json!({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": format!("data:{};base64,{}", source.media_type, source.data)
+                                }
+                            }));
+                        }
+                        ContentBlock::Audio { source } => {
+                            has_multimodal = true;
+                            content_parts.push(serde_json::json!({
+                                "type": "input_audio",
+                                "input_audio": {
+                                    "data": source.data,
+                                    "format": source.format
+                                }
+                            }));
+                        }
                         ContentBlock::ToolResult { tool_use_id, content, .. } => {
                             tool_results.push((tool_use_id.clone(), content.clone().unwrap_or_default()));
                         }
@@ -282,11 +302,20 @@ pub fn convert_for_openai(input: &PreparedModelInput) -> Vec<serde_json::Value> 
                     }));
                 }
 
-                if !text_parts.is_empty() {
-                    result.push(serde_json::json!({
-                        "role": "user",
-                        "content": text_parts.join("\n")
-                    }));
+                if !content_parts.is_empty() {
+                    if has_multimodal || content_parts.len() > 1 {
+                        // 有图片/音频或多段内容 → 用数组格式
+                        result.push(serde_json::json!({
+                            "role": "user",
+                            "content": content_parts
+                        }));
+                    } else if content_parts[0]["type"] == "text" {
+                        // 纯文本 → 简单字符串格式
+                        result.push(serde_json::json!({
+                            "role": "user",
+                            "content": content_parts[0]["text"]
+                        }));
+                    }
                 }
             }
             Role::System => {

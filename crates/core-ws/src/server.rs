@@ -485,8 +485,28 @@ async fn handle_send_message(
         .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
 
-    if session_id.is_empty() || message.is_empty() {
+    let audio: Vec<core_runtime::AudioInput> = payload["audio"].as_array()
+        .map(|a| a.iter().filter_map(|v| {
+            let data = v["data"].as_str()?;
+            let format = v["format"].as_str().unwrap_or("wav");
+            Some(core_runtime::AudioInput {
+                data: data.to_string(),
+                format: format.to_string(),
+            })
+        }).collect())
+        .unwrap_or_default();
+
+    if session_id.is_empty() || (message.is_empty() && images.is_empty() && audio.is_empty()) {
         send_err(&tx, &request_id, "session_id and message are required").await;
+        return;
+    }
+
+    // 检查该 session 是否已有活跃 run，拒绝并发 send
+    if let Some(active_run_id) = scaffold.has_active_run_for_session(&session_id) {
+        send_err(&tx, &request_id, &format!(
+            "session '{}' already has an active run ({}), wait for it to complete or cancel it first",
+            session_id, active_run_id
+        )).await;
         return;
     }
 
@@ -528,6 +548,7 @@ async fn handle_send_message(
         run_id: run_id.clone(),
         message: message.to_string(),
         images,
+        audio,
         max_repeated_tool_calls,
     };
 
@@ -916,6 +937,7 @@ async fn handle_session_messages(
                 "role": format!("{:?}", m.role).to_lowercase(),
                 "kind": format!("{:?}", m.kind).to_lowercase(),
                 "text": text,
+                "content": m.content,
                 "created_at": m.created_at.to_rfc3339(),
             })
         })
@@ -1323,6 +1345,12 @@ async fn handle_update_provider(
     if let Some(t) = payload["temperature"].as_f64() {
         config.temperature = t;
     }
+    if let Some(v) = payload["supports_image"].as_bool() {
+        config.supports_image = v;
+    }
+    if let Some(v) = payload["supports_audio"].as_bool() {
+        config.supports_audio = v;
+    }
 
     // 验证：api_key 和 model 不能为空
     if config.api_key.is_empty() || config.model.is_empty() {
@@ -1341,6 +1369,8 @@ async fn handle_update_provider(
             "model": config.model,
             "max_tokens": config.max_tokens,
             "temperature": config.temperature,
+            "supports_image": config.supports_image,
+            "supports_audio": config.supports_audio,
         }
     })).await;
 
@@ -1370,6 +1400,8 @@ async fn handle_get_provider(
             "model": config.model,
             "max_tokens": config.max_tokens,
             "temperature": config.temperature,
+            "supports_image": config.supports_image,
+            "supports_audio": config.supports_audio,
         }
     })).await;
 }

@@ -125,7 +125,15 @@ pub struct ChatOptions {
     pub run_id: String,
     pub message: String,
     pub images: Vec<String>,
+    pub audio: Vec<AudioInput>,
     pub max_repeated_tool_calls: u32,
+}
+
+/// 音频输入
+#[derive(Debug, Clone)]
+pub struct AudioInput {
+    pub data: String,
+    pub format: String,
 }
 
 impl Default for ChatOptions {
@@ -135,6 +143,7 @@ impl Default for ChatOptions {
             run_id: String::new(),
             message: String::new(),
             images: Vec::new(),
+            audio: Vec::new(),
             max_repeated_tool_calls: DEFAULT_REPEATED_TOOL_CALL_LIMIT,
         }
     }
@@ -436,6 +445,16 @@ impl AgentKernel {
         runs
     }
 
+    /// 检查指定 session 是否有正在运行的 run
+    pub fn has_active_run_for_session(&self, session_id: &str) -> Option<String> {
+        self.active_runs
+            .read()
+            .unwrap()
+            .iter()
+            .find(|(_, entry)| entry.session_id == session_id && !entry.control.is_cancelled())
+            .map(|(run_id, _)| run_id.clone())
+    }
+
     async fn finalize_cancelled_run(
         &self,
         session_id: &str,
@@ -518,6 +537,17 @@ impl AgentKernel {
             opts.run_id = format!("run_{}", uuid::Uuid::new_v4());
         }
 
+        // 检查该 session 是否已有活跃 run，拒绝并发
+        if let Some(active_run_id) = self.has_active_run_for_session(&opts.session_id) {
+            return Err(RuntimeErrorReport::validation(
+                "chat.concurrent",
+                format!(
+                    "session '{}' already has an active run ({}), wait for it to complete or cancel it first",
+                    opts.session_id, active_run_id
+                ),
+            ));
+        }
+
         let started_at = Instant::now();
         let run_control = self.register_run_control(&opts.session_id, &opts.run_id, started_at);
         let _run_cleanup = RunCleanup {
@@ -552,8 +582,41 @@ impl AgentKernel {
                 })),
         );
 
-        // 追加用户消息
-        let user_content = vec![ContentBlock::text(&opts.message)];
+        // 能力校验：检查供应商是否支持图片/音频
+        if !opts.images.is_empty() && !active_config.supports_image {
+            return Err(RuntimeErrorReport::validation(
+                "provider.capability",
+                format!("当前供应商配置不支持图片输入（supports_image=false）。请在供应商设置中开启图片支持，或清除图片后重试。"),
+            ));
+        }
+        if !opts.audio.is_empty() && !active_config.supports_audio {
+            return Err(RuntimeErrorReport::validation(
+                "provider.capability",
+                format!("当前供应商配置不支持音频输入（supports_audio=false）。请在供应商设置中开启音频支持，或清除音频后重试。"),
+            ));
+        }
+
+        // 追加用户消息（含图片、音频）
+        let mut user_content = Vec::new();
+        for img_b64 in &opts.images {
+            // 前端传 base64 字符串，自动检测 media_type
+            let (media_type, data) = if img_b64.starts_with("data:") {
+                // data:image/png;base64,xxxxx 格式
+                let parts: Vec<&str> = img_b64.splitn(2, ',').collect();
+                let header = parts.first().unwrap_or(&"");
+                let raw = parts.get(1).unwrap_or(&"");
+                let mt = header.split(':').nth(1).unwrap_or("image/png").split(';').next().unwrap_or("image/png");
+                (mt.to_string(), raw.to_string())
+            } else {
+                ("image/png".to_string(), img_b64.clone())
+            };
+            user_content.push(ContentBlock::image(&media_type, &data));
+        }
+        // 追加音频
+        for audio_input in &opts.audio {
+            user_content.push(ContentBlock::audio(&audio_input.format, &audio_input.data));
+        }
+        user_content.push(ContentBlock::text(&opts.message));
         let user_msg = Message::new(&opts.session_id, Role::User, user_content);
         self.context_mgr.add_message(&opts.session_id, user_msg.clone());
         self.storage.save_message(&user_msg).await?;
@@ -850,6 +913,23 @@ impl AgentKernel {
                 _ = run_control.notify.notified() => {
                     if let Some(router) = self.tool_router.clone() {
                         let _ = router.cancel_run(&opts.run_id).await;
+                    }
+                    // 取消时，为所有未完成的工具调用保存 error tool_result
+                    // 避免消息历史中出现没有 result 的 tool_use
+                    let mut cancelled_results = Vec::new();
+                    for tu in &tool_uses {
+                        if let ContentBlock::ToolUse { id, name, .. } = tu {
+                            cancelled_results.push(ContentBlock::tool_result(
+                                id,
+                                &format!("工具 '{}' 执行被用户中断", name),
+                                true,
+                            ));
+                        }
+                    }
+                    if !cancelled_results.is_empty() {
+                        let cancel_result_msg = Message::new(&opts.session_id, Role::User, cancelled_results);
+                        self.context_mgr.add_message(&opts.session_id, cancel_result_msg.clone());
+                        let _ = self.storage.save_message(&cancel_result_msg).await;
                     }
                     return self.finalize_cancelled_run(
                         &opts.session_id,

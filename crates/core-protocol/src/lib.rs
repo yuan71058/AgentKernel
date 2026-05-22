@@ -52,6 +52,9 @@ pub enum ContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
     },
+    Audio {
+        source: AudioSource,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +63,12 @@ pub struct ImageSource {
     pub source_type: String,
     pub media_type: String,
     pub data: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioSource {
+    pub data: String,
+    pub format: String,
 }
 
 impl ContentBlock {
@@ -82,6 +91,14 @@ impl ContentBlock {
                 source_type: "base64".to_string(),
                 media_type: media_type.to_string(),
                 data: data.to_string(),
+            },
+        }
+    }
+    pub fn audio(format: &str, data: &str) -> Self {
+        ContentBlock::Audio {
+            source: AudioSource {
+                data: data.to_string(),
+                format: format.to_string(),
             },
         }
     }
@@ -405,6 +422,12 @@ pub struct ProviderConfig {
     pub temperature: f64,
     #[serde(default = "default_context_window")]
     pub context_window_tokens: u64,
+    /// 是否支持图片输入（默认 false，仅文本）
+    #[serde(default)]
+    pub supports_image: bool,
+    /// 是否支持音频输入（默认 false，仅文本）
+    #[serde(default)]
+    pub supports_audio: bool,
 }
 
 fn default_max_tokens() -> u64 { 4096 }
@@ -441,6 +464,8 @@ impl Default for ProviderConfig {
             max_tokens: 4096,
             temperature: 0.0,
             context_window_tokens: 128_000,
+            supports_image: false,
+            supports_audio: false,
         }
     }
 }
