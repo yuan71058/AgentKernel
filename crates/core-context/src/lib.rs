@@ -92,14 +92,29 @@ impl ContextManager {
         }
     }
 
-    /// 构建完整模型输入：system prompts + context seeds + recent messages
+    /// 构建完整模型输入：context seeds (按 active context 的 base_seed_ids 过滤) + 上下文消息
     pub fn build_model_input(&self, session_id: &str) -> Vec<Message> {
         let mut result = Vec::new();
 
-        // 1. Context Seeds 作为 system 消息
+        // 1. Context Seeds — 只注入 active context 的 base_seed_ids 指定的 seeds
+        let active_ctx = self.get_context(session_id);
         let seeds = self.seeds.read().unwrap();
         if let Some(session_seeds) = seeds.get(session_id) {
-            for seed in session_seeds.iter().filter(|s| s.enabled) {
+            let filtered: Vec<_> = if let Some(ref ctx) = active_ctx {
+                if !ctx.rules.base_seed_ids.is_empty() {
+                    // 只保留 base_seed_ids 中引用的、且 enabled 的 seeds
+                    session_seeds.iter().filter(|s| {
+                        s.enabled && ctx.rules.base_seed_ids.contains(&s.seed_id)
+                    }).collect()
+                } else {
+                    // base_seed_ids 为空 → 全部 enabled seeds（向后兼容）
+                    session_seeds.iter().filter(|s| s.enabled).collect()
+                }
+            } else {
+                // 无 active context → 全部 enabled seeds
+                session_seeds.iter().filter(|s| s.enabled).collect()
+            };
+            for seed in filtered {
                 result.push(Message {
                     message_id: seed.seed_id.clone(),
                     session_id: session_id.to_string(),
@@ -218,8 +233,16 @@ impl ContextManager {
         ctx
     }
 
-    /// 应用压缩摘要：写入 summary seed，并切换到 compacted context
+    /// 应用压缩摘要：清除旧压缩 seeds，写入新 summary seed，切换到 compacted context
     pub fn apply_compaction(&self, session_id: &str, summary: String, include_after_message_id: Option<String>) -> (ContextState, ContextSeed) {
+        // 清除该 session 旧的 CompactionSummary seeds
+        {
+            let mut seeds = self.seeds.write().unwrap();
+            if let Some(session_seeds) = seeds.get_mut(session_id) {
+                session_seeds.retain(|s| s.kind != SeedKind::CompactionSummary);
+            }
+        }
+
         let seed = ContextSeed {
             seed_id: format!("seed_{}", uuid::Uuid::new_v4()),
             session_id: session_id.to_string(),

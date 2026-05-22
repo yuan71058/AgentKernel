@@ -1279,9 +1279,19 @@ async def connect():
 
 **额外事件**: `context.seed.added`
 
+> **注意**: 通过 `seed.add` 手动注入的种子，如果未被任何 ContextState 的 `base_seed_ids` 引用，在压缩后的新上下文中**不会自动注入模型输入**。只有 `compaction.apply` 创建的 summary seed 会被自动加入 `base_seed_ids`。
+
 ---
 
 ### 4.26 `context.compaction.apply` — 应用压缩摘要
+
+**作用**: 创建压缩摘要 Seed，替换旧压缩上下文，切换 Active Context。
+
+**行为说明**:
+- 自动清除该 session 旧的 `CompactionSummary` 类型 seeds（多次压缩不会累积）
+- 创建新 ContextState（mode=`compacted`），`base_seed_ids` 指向新 summary seed
+- `include_after_message_id`：传入后，模型只看到该消息之后的新消息 + summary seed；**不传则全量历史仍会提交**，压缩无实际效果
+- 下次 `session.send` 时，`build_model_input` 只注入 `base_seed_ids` 引用的 seeds，非引用的 seeds 不进入模型上下文
 
 **请求**:
 
@@ -1296,6 +1306,13 @@ async def connect():
   }
 }
 ```
+
+**payload 字段**:
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `summary` | string | ✅ | 压缩摘要内容 |
+| `include_after_message_id` | string | 可选 | 仅保留该消息之后的新消息；不传则旧消息全部保留在上下文中 |
 
 **额外事件**: `context.compaction.applied`
 
