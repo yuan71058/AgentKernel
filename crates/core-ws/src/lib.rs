@@ -58,6 +58,7 @@ pub mod commands {
     pub const SESSION_DELETE: &str = "session.delete";
     pub const SESSION_CLEAR: &str = "session.clear";
     pub const SESSION_MESSAGES: &str = "session.messages";
+    pub const SESSION_FORK: &str = "session.fork";
     pub const CANCEL_RUN: &str = "run.cancel";
     pub const RUNTIME_SESSIONS: &str = "runtime.sessions";
 

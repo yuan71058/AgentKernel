@@ -184,6 +184,7 @@ async def connect():
       "session.info",
       "session.delete",
       "session.clear",
+      "session.fork",
       "session.messages",
       "session.list",
       "system.stats",
@@ -1050,7 +1051,78 @@ async def connect():
 
 ---
 
-### 4.18 `system.stats` — 系统统计
+### 4.18 `session.fork` — 分叉 Session
+
+**作用**: 将源 session 的全部数据（消息、上下文、seeds、runs、工具配置）复制到一个新 session。原 session 完全不受影响，新 session 可独立继续对话。
+
+**请求**:
+
+```json
+{
+  "command": "session.fork",
+  "request_id": "r_fork_1",
+  "session_id": "",
+  "payload": {
+    "source_session_id": "sess_original",
+    "new_session_id": "sess_branch"
+  }
+}
+```
+
+**字段说明**:
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `source_session_id` | string | ✅ | 被分叉的源 session ID |
+| `new_session_id` | string | ✅ | 新 session ID（必须不存在） |
+
+**复制的数据**:
+
+| 数据 | 处理方式 |
+|------|---------|
+| session.json | 复制，session_id 替换为新 ID，时间戳更新，状态重置为 Active |
+| messages.jsonl | 全部复制，session_id 替换，保留原 message_id（可追溯） |
+| context_state.json | 复制，生成新 context_id，session_id 替换 |
+| seeds.jsonl | 全部复制，生成新 seed_id，session_id 替换 |
+| runs.jsonl | 全部复制，session_id 替换 |
+| events.jsonl | **不复制**（新 session 从零开始记录事件） |
+| provider_config | 内存中自动复制到新 session |
+| system_prompt | 随 session metadata 自动复制 |
+| tools 注册快照 | 随 session metadata 自动复制 |
+
+**成功响应**:
+
+```json
+{
+  "type": "response",
+  "request_id": "r_fork_1",
+  "success": true,
+  "payload": {
+    "source_session_id": "sess_original",
+    "new_session_id": "sess_branch",
+    "session": { "session_id": "sess_branch", "title": "...", "status": "Active", "..." : "..." },
+    "forked": true
+  }
+}
+```
+
+**错误场景**:
+
+| 错误 | 原因 |
+|------|------|
+| `source_session_id and new_session_id are required` | 字段为空 |
+| `source session 'xxx' not found` | 源 session 不存在 |
+| `destination session 'xxx' already exists` | 目标 session 已存在（不能覆盖） |
+
+**使用场景**:
+
+- 对话到一半想尝试不同方向，fork 一个分支继续聊，不影响原对话
+- 压缩前先 fork 一份完整历史作为备份
+- 多人协作：从同一个 session fork 出不同人的工作分支
+
+---
+
+### 4.19 `system.stats` — 系统统计
 
 **请求**:
 
@@ -1086,7 +1158,7 @@ async def connect():
 
 ---
 
-### 4.19 `runtime.sessions` — 查询运行中的 Session
+### 4.20 `runtime.sessions` — 查询运行中的 Session
 
 **请求**:
 
@@ -1120,7 +1192,7 @@ async def connect():
 
 ---
 
-### 4.20 `context.preview` — 预览上下文视图
+### 4.21 `context.preview` — 预览上下文视图
 
 **请求**:
 
@@ -1170,7 +1242,7 @@ async def connect():
 
 ---
 
-### 4.21 `context.reset` — 重置上下文规则
+### 4.22 `context.reset` — 重置上下文规则
 
 **请求**:
 
@@ -1187,7 +1259,7 @@ async def connect():
 
 ---
 
-### 4.22 `context.exclude` — 排除消息区间
+### 4.23 `context.exclude` — 排除消息区间
 
 **请求**:
 
@@ -1212,7 +1284,7 @@ async def connect():
 
 ---
 
-### 4.23 `context.include_after` — 从某消息后纳入上下文
+### 4.24 `context.include_after` — 从某消息后纳入上下文
 
 **请求**:
 
@@ -1231,7 +1303,7 @@ async def connect():
 
 ---
 
-### 4.24 `context.keep_recent` — 只保留最近 N 条
+### 4.25 `context.keep_recent` — 只保留最近 N 条
 
 **请求**:
 
@@ -1252,7 +1324,7 @@ async def connect():
 
 ---
 
-### 4.25 `context.seed.add` — 注入上下文 Seed
+### 4.26 `context.seed.add` — 注入上下文 Seed
 
 **请求**:
 
@@ -1283,7 +1355,7 @@ async def connect():
 
 ---
 
-### 4.26 `context.compaction.apply` — 应用压缩摘要
+### 4.27 `context.compaction.apply` — 应用压缩摘要
 
 **作用**: 创建压缩摘要 Seed，替换旧压缩上下文，切换 Active Context。
 
@@ -1318,7 +1390,7 @@ async def connect():
 
 ---
 
-### 4.27 `events.pull` — 断线补拉事件
+### 4.28 `events.pull` — 断线补拉事件
 
 **请求**:
 
@@ -1352,7 +1424,7 @@ async def connect():
 
 ---
 
-### 4.28 `events.subscribe` — 订阅实时事件
+### 4.29 `events.subscribe` — 订阅实时事件
 
 **请求**:
 
@@ -1388,7 +1460,7 @@ async def connect():
 
 ---
 
-### 4.29 `run.cancel` — 中断运行
+### 4.30 `run.cancel` — 中断运行
 
 **请求**:
 

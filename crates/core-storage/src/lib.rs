@@ -47,6 +47,11 @@ pub trait Storage: Send + Sync {
 
     // JSONL 事件日志
     async fn append_event_log(&self, event: &EventEnvelope) -> Result<(), String>;
+
+    // Session Fork：将源 session 数据复制到新 session
+    async fn copy_session_data(&self, _src_session_id: &str, _dst_session_id: &str) -> Result<(), String> {
+        Err("copy_session_data not implemented".to_string())
+    }
 }
 
 /// 文件存储（阶段性实现）
@@ -216,6 +221,88 @@ impl Storage for FileStorage {
         self.ensure_session_dir(&event.session_id).await?;
         self.append_jsonl(&self.events_file(&event.session_id), event).await
     }
+
+    async fn copy_session_data(&self, src_session_id: &str, dst_session_id: &str) -> Result<(), String> {
+        // 1. 复制 session.json，更新 session_id 和时间戳
+        let mut session: Session = self.read_json(&self.session_file(src_session_id)).await?
+            .ok_or_else(|| format!("source session '{}' not found", src_session_id))?;
+        session.session_id = dst_session_id.to_string();
+        session.active_context_id = String::new();
+        session.created_at = chrono::Utc::now();
+        session.updated_at = chrono::Utc::now();
+        session.status = SessionStatus::Active;
+        self.ensure_session_dir(dst_session_id).await?;
+        self.write_json(&self.session_file(dst_session_id), &session).await?;
+
+        // 2. 复制 messages（保留原 message_id，更新 session_id）
+        let messages: Vec<Message> = self.get_messages(src_session_id).await?;
+        if !messages.is_empty() {
+            let mut remapped: Vec<Message> = Vec::with_capacity(messages.len());
+            for mut msg in messages {
+                msg.session_id = dst_session_id.to_string();
+                remapped.push(msg);
+            }
+            // 写入单个 messages.jsonl
+            let path = self.messages_file(dst_session_id);
+            let mut lines = String::new();
+            for msg in &remapped {
+                lines.push_str(&serde_json::to_string(msg).map_err(|e| e.to_string())?);
+                lines.push('\n');
+            }
+            use tokio::io::AsyncWriteExt;
+            let mut file = tokio::fs::OpenOptions::new()
+                .create(true).write(true).truncate(true)
+                .open(&path).await.map_err(|e| e.to_string())?;
+            file.write_all(lines.as_bytes()).await.map_err(|e| e.to_string())?;
+        }
+
+        // 3. 复制 context_state，生成新 context_id，更新 session_id
+        if let Some(mut ctx) = self.get_context_state(src_session_id).await? {
+            ctx.context_id = format!("ctx_{}", uuid::Uuid::new_v4());
+            ctx.session_id = dst_session_id.to_string();
+            ctx.created_at = chrono::Utc::now();
+            self.write_json(&self.context_file(dst_session_id), &ctx).await?;
+        }
+
+        // 4. 复制 seeds，生成新 seed_id，更新 session_id
+        let seeds: Vec<ContextSeed> = self.get_seeds(src_session_id).await?;
+        if !seeds.is_empty() {
+            let path = self.seeds_file(dst_session_id);
+            let mut lines = String::new();
+            for mut seed in seeds {
+                seed.seed_id = format!("seed_{}", uuid::Uuid::new_v4());
+                seed.session_id = dst_session_id.to_string();
+                lines.push_str(&serde_json::to_string(&seed).map_err(|e| e.to_string())?);
+                lines.push('\n');
+            }
+            use tokio::io::AsyncWriteExt;
+            let mut file = tokio::fs::OpenOptions::new()
+                .create(true).write(true).truncate(true)
+                .open(&path).await.map_err(|e| e.to_string())?;
+            file.write_all(lines.as_bytes()).await.map_err(|e| e.to_string())?;
+        }
+
+        // 5. 复制 runs，更新 session_id
+        let runs: Vec<Run> = self.get_runs(src_session_id).await?;
+        if !runs.is_empty() {
+            let path = self.runs_file(dst_session_id);
+            let mut lines = String::new();
+            for mut run in runs {
+                run.session_id = dst_session_id.to_string();
+                lines.push_str(&serde_json::to_string(&run).map_err(|e| e.to_string())?);
+                lines.push('\n');
+            }
+            use tokio::io::AsyncWriteExt;
+            let mut file = tokio::fs::OpenOptions::new()
+                .create(true).write(true).truncate(true)
+                .open(&path).await.map_err(|e| e.to_string())?;
+            file.write_all(lines.as_bytes()).await.map_err(|e| e.to_string())?;
+        }
+
+        // 6. 不复制 events（新 session 从零开始）
+
+        Ok(())
+    }
 }
 /// 内存存储（测试用）
 pub struct MemoryStorage {
@@ -291,4 +378,44 @@ impl Storage for MemoryStorage {
     async fn save_seed(&self, _seed: &ContextSeed) -> Result<(), String> { Ok(()) }
     async fn get_seeds(&self, _session_id: &str) -> Result<Vec<ContextSeed>, String> { Ok(vec![]) }
     async fn append_event_log(&self, _event: &EventEnvelope) -> Result<(), String> { Ok(()) }
+
+    async fn copy_session_data(&self, src_session_id: &str, dst_session_id: &str) -> Result<(), String> {
+        // 复制 session
+        {
+            let sessions = self.sessions.read().unwrap();
+            if let Some(mut session) = sessions.get(src_session_id).cloned() {
+                session.session_id = dst_session_id.to_string();
+                session.created_at = chrono::Utc::now();
+                session.updated_at = chrono::Utc::now();
+                self.sessions.write().unwrap().insert(dst_session_id.to_string(), session);
+            } else {
+                return Err(format!("source session '{}' not found", src_session_id));
+            }
+        }
+        // 复制 messages
+        {
+            let msgs = self.messages.read().unwrap();
+            if let Some(src_msgs) = msgs.get(src_session_id) {
+                let cloned: Vec<Message> = src_msgs.iter().map(|m| {
+                    let mut c = m.clone();
+                    c.session_id = dst_session_id.to_string();
+                    c
+                }).collect();
+                self.messages.write().unwrap().insert(dst_session_id.to_string(), cloned);
+            }
+        }
+        // 复制 runs
+        {
+            let runs = self.runs.read().unwrap();
+            if let Some(src_runs) = runs.get(src_session_id) {
+                let cloned: Vec<Run> = src_runs.iter().map(|r| {
+                    let mut c = r.clone();
+                    c.session_id = dst_session_id.to_string();
+                    c
+                }).collect();
+                self.runs.write().unwrap().insert(dst_session_id.to_string(), cloned);
+            }
+        }
+        Ok(())
+    }
 }

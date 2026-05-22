@@ -248,6 +248,47 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Fork Session：将源 session 数据复制到新 session
+    /// 要求源 session 存在，目标 session_id 不存在
+    pub async fn fork(&self, src_session_id: &str, dst_session_id: &str) -> Result<Session, String> {
+        // 1. 校验源 session 存在
+        if self.sessions.read().unwrap().get(src_session_id).is_none() {
+            // 尝试从 storage 加载
+            if let Some(session) = self.storage.get_session(src_session_id).await? {
+                self.sessions.write().unwrap().insert(session.session_id.clone(), session);
+            } else {
+                return Err(format!("source session '{}' not found", src_session_id));
+            }
+        }
+
+        // 2. 校验目标 session 不存在
+        if self.sessions.read().unwrap().contains_key(dst_session_id) {
+            return Err(format!("destination session '{}' already exists", dst_session_id));
+        }
+        if self.storage.get_session(dst_session_id).await?.is_some() {
+            return Err(format!("destination session '{}' already exists in storage", dst_session_id));
+        }
+
+        // 3. 通过 storage 复制数据
+        self.storage.copy_session_data(src_session_id, dst_session_id).await?;
+
+        // 4. 加载新 session 到内存
+        let new_session = self.storage.get_session(dst_session_id).await?
+            .ok_or("fork succeeded but new session not found in storage")?;
+
+        // 5. provider override 也复制一份
+        if let Some(cfg) = self.get_provider_override(src_session_id) {
+            self.provider_overrides.write().unwrap()
+                .insert(dst_session_id.to_string(), cfg);
+        }
+
+        self.sessions.write().unwrap().insert(dst_session_id.to_string(), new_session.clone());
+        self.event_bus.emit(core_protocol::EventEnvelope::new(SESSION_CREATED, dst_session_id)
+            .with_payload(serde_json::json!({"forked_from": src_session_id})));
+        info!(src = %src_session_id, dst = %dst_session_id, "session forked");
+        Ok(new_session)
+    }
+
     /// 创建 Run
     pub async fn create_run(&self, session_id: &str, provider: &str, model: &str) -> Result<Run, String> {
         let run = Run {

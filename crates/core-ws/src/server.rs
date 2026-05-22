@@ -351,6 +351,9 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
             commands::SESSION_CLEAR => {
                 handle_session_clear(&scaffold, &tx_clone, &session_id, &request_id).await;
             }
+            commands::SESSION_FORK => {
+                handle_session_fork(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
+            }
             commands::SESSION_MESSAGES => {
                 if !session_id.is_empty() {
                     if let Err(e) = scaffold.load_session_state(&session_id).await {
@@ -897,6 +900,42 @@ async fn handle_session_clear(
     })).await;
 
     info!(session_id = %session_id, "context cleared via ws");
+}
+
+/// session.fork — 分叉 session（复制历史/上下文/工具到新 session，不影响原 session）
+async fn handle_session_fork(
+    scaffold: &AgentKernel,
+    tx: &mpsc::Sender<WsMessage>,
+    _session_id: &str,
+    request_id: &str,
+    payload: &serde_json::Value,
+) {
+    let src_id = payload["source_session_id"].as_str().unwrap_or("").to_string();
+    let dst_id = payload["new_session_id"].as_str().unwrap_or("").to_string();
+
+    if src_id.is_empty() || dst_id.is_empty() {
+        send_err(tx, request_id, "source_session_id and new_session_id are required").await;
+        return;
+    }
+
+    match scaffold.session_mgr.fork(&src_id, &dst_id).await {
+        Ok(session) => {
+            // 加载新 session 的完整状态到内存（消息、上下文、seeds）
+            if let Err(e) = scaffold.load_session_state(&dst_id).await {
+                warn!(session_id = %dst_id, error = %e, "load forked session state failed");
+            }
+            send_ok(tx, request_id, json!({
+                "source_session_id": src_id,
+                "new_session_id": dst_id,
+                "session": session,
+                "forked": true,
+            })).await;
+            info!(src = %src_id, dst = %dst_id, "session forked via ws");
+        }
+        Err(e) => {
+            send_err(tx, request_id, &e).await;
+        }
+    }
 }
 
 /// session.messages — 分页读取消息历史
