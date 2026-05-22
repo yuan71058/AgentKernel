@@ -618,31 +618,33 @@
           </div>
         </div>
 
-        <!-- Mobile Session Bar -->
-        <div class="mobile-session-bar" style="position:relative">
-          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
-          <div class="mobile-session-trigger" :class="{open: mobileSessionOpen}" @click="mobileSessionOpen = !mobileSessionOpen">
-            <span class="session-name">{{ currentSessionTitle }}</span>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="6 9 12 15 18 9"/></svg>
-          </div>
-          <div class="mobile-session-dropdown" v-show="mobileSessionOpen" @click.stop>
-            <div class="mobile-session-option" v-for="s in sessions" :key="s.session_id"
-                 :class="{active: s.session_id === sessionId}"
-                 @click="selectSession(s.session_id); mobileSessionOpen = false">
-              <span class="opt-title">{{ s.title || s.session_id }}</span>
-              <span class="opt-meta">{{ s.message_count || 0 }} 条</span>
-            </div>
-            <div v-if="sessions.length === 0" style="padding:16px;text-align:center;color:var(--text3);font-size:13px">暂无会话</div>
-          </div>
-          <button class="btn" @click="createNewSession" :disabled="!connected" style="padding:6px 8px;font-size:12px;flex-shrink:0" title="新建会话">
-            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-          </button>
-          <button class="btn" @click="loadSessions" :disabled="!connected" style="padding:6px 8px;font-size:12px;flex-shrink:0" title="刷新">
-            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
-          </button>
         </div>
 
         <div class="chat-container">
+          <!-- Mobile Session Bar -->
+          <div class="mobile-session-bar" style="position:relative">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+            <div class="mobile-session-trigger" :class="{open: mobileSessionOpen}" @click="mobileSessionOpen = !mobileSessionOpen">
+              <span class="session-name">{{ currentSessionTitle }}</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+            <div class="mobile-session-dropdown" v-show="mobileSessionOpen" @click.stop>
+              <div class="mobile-session-option" v-for="s in sessions" :key="s.session_id"
+                   :class="{active: s.session_id === sessionId}"
+                   @click="selectSession(s.session_id); mobileSessionOpen = false">
+                <span class="opt-title">{{ s.title || s.session_id }}</span>
+                <span class="opt-meta">{{ s.message_count || 0 }} 条</span>
+              </div>
+              <div v-if="sessions.length === 0" style="padding:16px;text-align:center;color:var(--text3);font-size:13px">暂无会话</div>
+            </div>
+            <button class="btn" @click="createNewSession" :disabled="!connected" style="padding:6px 8px;font-size:12px;flex-shrink:0" title="新建会话">
+              <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            </button>
+            <button class="btn" @click="loadSessions" :disabled="!connected" style="padding:6px 8px;font-size:12px;flex-shrink:0" title="刷新">
+              <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+            </button>
+          </div>
+
           <div class="chat-header">
             <h3>
               <svg class="icon" style="margin-right:6px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
@@ -825,6 +827,8 @@
               </div>
             </div>
           </div>
+          <!-- 移动端底部占位，防止输入栏被底部导航遮挡 -->
+          <div class="mobile-bottom-spacer"></div>
         </div>
       </div>
 

@@ -290,24 +290,23 @@ textarea.config-input { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco
   /* 桌面输入栏按钮隐藏，改用 + 菜单 */
   .chat-input .btn-desktop-only { display: none !important; }
 
-  /* 聊天头部紧凑 */
-  .chat-header { padding: 8px 12px; flex-wrap: wrap; gap: 6px; }
-  .chat-header h3 { font-size: 13px; }
-  .chat-header h3 svg { display: none; }
-  .chat-controls { gap: 4px; }
-  .chat-controls input { width: 100px; font-size: 11px; }
+  /* 隐藏桌面 chat-header，移动端用 session-bar 替代 */
+  .chat-header { display: none !important; }
 
   /* 聊天输入区 */
   .chat-input { gap: 4px; padding: 6px 8px; }
   .chat-input input { font-size: 14px; min-width: 0; }
   .chat-input .btn { padding: 6px 8px; font-size: 11px; }
   .chat-input .btn-send { padding: 6px 10px; }
-  .chat-input-wrapper { padding-bottom: 60px; flex-shrink: 0; }
+  .chat-input-wrapper { flex-shrink: 0; }
 
   /* 消息 */
-  .chat-body { padding: 8px 8px 16px 8px; }
+  .chat-body { padding: 8px; }
   .msg { max-width: 92%; font-size: 13px; }
   .msg-wrapper.assistant .msg { max-width: 92%; }
+
+  /* 底部占位 */
+  .mobile-bottom-spacer { display: block !important; height: 56px; flex-shrink: 0; }
 
   /* Right 面板内部 */
   .right .tabs { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 0 8px; flex-shrink: 0; }
@@ -332,6 +331,7 @@ textarea.config-input { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco
 
 /* ─── 移动端专属组件（默认隐藏）────────── */
 .mobile-debug-header { display: none; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg); flex-shrink: 0; }
+.mobile-bottom-spacer { display: none; }
 
 /* 会话选择栏 */
 .mobile-session-bar { display: none; padding: 8px 12px; gap: 8px; align-items: center; border-bottom: 1px solid var(--border); background: var(--bg); flex-shrink: 0; position: relative; }
