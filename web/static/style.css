@@ -118,7 +118,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helve
 .markdown-body h2 { font-size: 18px; }
 .markdown-body h3 { font-size: 16px; }
 
-.chat-input-wrapper { padding: 20px; background: var(--bg); border-top: 1px solid var(--border); }
+.chat-input-wrapper { padding: 20px; background: var(--bg); border-top: 1px solid var(--border); position: relative; }
 .chat-input { display: flex; gap: 12px; background: var(--bg2); padding: 8px; border-radius: 16px; border: 1px solid var(--border); transition: border-color 0.2s, box-shadow 0.2s; align-items: flex-end; }
 .chat-input:focus-within { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1); background: var(--bg); }
 .chat-input input { flex: 1; background: transparent; border: none; padding: 8px 12px; color: var(--text); font-size: 14px; font-family: inherit; outline: none; }
@@ -281,11 +281,14 @@ textarea.config-input { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco
   .session-sidebar { display: none; }
   .chat-container { width: 100%; min-width: 0; }
 
-  /* 移动端顶部会话选择器 */
+  /* 移动端专属组件 */
   .mobile-session-bar { display: flex !important; }
   .mobile-bottom-bar { display: flex !important; }
-  .mobile-debug-header { display: flex !important; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg); flex-shrink: 0; }
+  .mobile-debug-header { display: flex !important; }
   .floating-stats { display: none !important; }
+
+  /* 桌面输入栏按钮隐藏，改用 + 菜单 */
+  .chat-input .btn-desktop-only { display: none !important; }
 
   /* 聊天头部紧凑 */
   .chat-header { padding: 8px 12px; flex-wrap: wrap; gap: 6px; }
@@ -299,10 +302,10 @@ textarea.config-input { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco
   .chat-input input { font-size: 14px; min-width: 0; }
   .chat-input .btn { padding: 6px 8px; font-size: 11px; }
   .chat-input .btn-send { padding: 6px 10px; }
-  .chat-input-wrapper { margin-bottom: 52px; }
+  .chat-input-wrapper { padding-bottom: 60px; flex-shrink: 0; }
 
   /* 消息 */
-  .chat-body { padding: 8px 8px 60px 8px; }
+  .chat-body { padding: 8px 8px 16px 8px; }
   .msg { max-width: 92%; font-size: 13px; }
   .msg-wrapper.assistant .msg { max-width: 92%; }
 
@@ -327,14 +330,42 @@ textarea.config-input { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco
   .modal-body { padding: 12px; }
 }
 
-/* 移动端专属组件 - 默认隐藏 */
-.mobile-debug-header { display: none; }
-.mobile-session-bar { display: none; padding: 8px 12px; gap: 8px; align-items: center; border-bottom: 1px solid var(--border); background: var(--bg); }
-.mobile-session-bar select { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); font-size: 13px; color: var(--text); }
-.mobile-session-bar .btn { flex-shrink: 0; }
+/* ─── 移动端专属组件（默认隐藏）────────── */
+.mobile-debug-header { display: none; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg); flex-shrink: 0; }
 
+/* 会话选择栏 */
+.mobile-session-bar { display: none; padding: 8px 12px; gap: 8px; align-items: center; border-bottom: 1px solid var(--border); background: var(--bg); flex-shrink: 0; position: relative; }
+.mobile-session-trigger { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); cursor: pointer; font-size: 14px; font-weight: 600; color: var(--text); }
+.mobile-session-trigger .session-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-session-trigger svg { flex-shrink: 0; color: var(--text3); transition: transform 0.2s; }
+.mobile-session-trigger.open svg { transform: rotate(180deg); }
+.mobile-session-dropdown { position: absolute; top: 100%; left: 12px; right: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-md); z-index: 200; max-height: 300px; overflow-y: auto; }
+.mobile-session-option { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; cursor: pointer; transition: background 0.15s; border-bottom: 1px solid var(--border); font-size: 14px; }
+.mobile-session-option:last-child { border-bottom: none; }
+.mobile-session-option:hover { background: var(--bg2); }
+.mobile-session-option.active { background: #eff6ff; color: var(--blue); font-weight: 600; }
+.mobile-session-option .opt-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-session-option .opt-meta { font-size: 12px; color: var(--text3); margin-left: 8px; flex-shrink: 0; }
+
+/* 底部导航栏 */
 .mobile-bottom-bar { display: none; position: fixed; bottom: 0; left: 0; right: 0; background: var(--bg); border-top: 1px solid var(--border); z-index: 60; padding: 4px 0; padding-bottom: env(safe-area-inset-bottom, 4px); justify-content: space-around; }
 .mobile-bottom-bar .mobile-tab { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 16px; font-size: 10px; color: var(--text3); cursor: pointer; border: none; background: none; }
 .mobile-bottom-bar .mobile-tab.active { color: var(--blue); }
 .mobile-bottom-bar .mobile-tab svg { width: 20px; height: 20px; }
+
+/* + 弹出菜单 */
+.chat-input .btn-more { display: none; }
+.mobile-more-popup { display: none; }
+@media (max-width: 768px) {
+  .chat-input .btn-more { display: flex; }
+  .mobile-more-popup { display: none; position: absolute; bottom: 100%; left: 0; right: 0; background: var(--bg); border-top: 1px solid var(--border); box-shadow: 0 -4px 12px rgba(0,0,0,0.08); padding: 16px 12px 12px; z-index: 10; }
+  .mobile-more-popup.open { display: block; }
+  .mobile-more-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .mobile-more-item { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 4px; border-radius: 10px; cursor: pointer; transition: background 0.15s; border: none; background: none; color: var(--text); }
+  .mobile-more-item:active { background: var(--bg2); }
+  .mobile-more-item .item-icon { width: 44px; height: 44px; border-radius: 12px; background: var(--bg2); display: flex; align-items: center; justify-content: center; color: var(--text2); }
+  .mobile-more-item .item-icon svg { width: 22px; height: 22px; }
+  .mobile-more-item .item-icon.recording { background: #fef2f2; color: var(--red); }
+  .mobile-more-item span { font-size: 11px; color: var(--text2); }
+}
 

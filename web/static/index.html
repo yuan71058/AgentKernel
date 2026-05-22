@@ -619,15 +619,25 @@
         </div>
 
         <!-- Mobile Session Bar -->
-        <div class="mobile-session-bar">
+        <div class="mobile-session-bar" style="position:relative">
           <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
-          <select v-model="sessionId" @change="selectSession(sessionId)" style="flex:1;min-width:0">
-            <option v-for="s in sessions" :key="s.session_id" :value="s.session_id">{{ s.title || s.session_id }}</option>
-          </select>
-          <button class="btn" @click="createNewSession" :disabled="!connected" style="padding:6px 8px;font-size:12px" title="新建会话">
+          <div class="mobile-session-trigger" :class="{open: mobileSessionOpen}" @click="mobileSessionOpen = !mobileSessionOpen">
+            <span class="session-name">{{ currentSessionTitle }}</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
+          <div class="mobile-session-dropdown" v-show="mobileSessionOpen" @click.stop>
+            <div class="mobile-session-option" v-for="s in sessions" :key="s.session_id"
+                 :class="{active: s.session_id === sessionId}"
+                 @click="selectSession(s.session_id); mobileSessionOpen = false">
+              <span class="opt-title">{{ s.title || s.session_id }}</span>
+              <span class="opt-meta">{{ s.message_count || 0 }} 条</span>
+            </div>
+            <div v-if="sessions.length === 0" style="padding:16px;text-align:center;color:var(--text3);font-size:13px">暂无会话</div>
+          </div>
+          <button class="btn" @click="createNewSession" :disabled="!connected" style="padding:6px 8px;font-size:12px;flex-shrink:0" title="新建会话">
             <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
           </button>
-          <button class="btn" @click="loadSessions" :disabled="!connected" style="padding:6px 8px;font-size:12px" title="刷新">
+          <button class="btn" @click="loadSessions" :disabled="!connected" style="padding:6px 8px;font-size:12px;flex-shrink:0" title="刷新">
             <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
           </button>
         </div>
@@ -759,28 +769,60 @@
             <input type="file" id="image-file-input" accept="image/*" multiple style="display:none" @change="handleFileSelect">
             <input type="file" id="audio-file-input" accept="audio/*" multiple style="display:none" @change="handleAudioFileSelect">
             <div class="chat-input">
-              <button class="btn" @click="triggerFileSelect" :disabled="!connected" title="选择图片" style="padding:6px 8px;flex-shrink:0;font-size:12px">
+              <button class="btn btn-desktop-only" @click="triggerFileSelect" :disabled="!connected" title="选择图片" style="padding:6px 8px;flex-shrink:0;font-size:12px">
                 <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
               </button>
-              <button class="btn" @click="triggerAudioFileSelect" :disabled="!connected" title="选择音频文件" style="padding:6px 8px;flex-shrink:0;font-size:12px">
+              <button class="btn btn-desktop-only" @click="triggerAudioFileSelect" :disabled="!connected" title="选择音频文件" style="padding:6px 8px;flex-shrink:0;font-size:12px">
                 <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
               </button>
-              <button class="btn" @click="toggleRecording" :disabled="!connected" :title="isRecording ? '停止录音' : '开始录音'" style="padding:6px 8px;flex-shrink:0;font-size:12px" :style="isRecording ? 'color:var(--red);animation:pulse 1s infinite' : ''">
+              <button class="btn btn-desktop-only" @click="toggleRecording" :disabled="!connected" :title="isRecording ? '停止录音' : '开始录音'" style="padding:6px 8px;flex-shrink:0;font-size:12px" :style="isRecording ? 'color:var(--red);animation:pulse 1s infinite' : ''">
                 <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="6" :fill="isRecording ? 'var(--red)' : 'none'"></circle></svg>
               </button>
-              <input v-model="chatInput" placeholder="输入消息... (Enter 发送，可粘贴图片)" @keyup.enter="sendChat" @paste="handlePaste" :disabled="!connected">
-              <button class="btn" @click="cancelCurrentRun" :disabled="!connected || !currentRunId || !['pending','running','streaming','cancelling'].includes(currentRunStatus)" title="停止当前生成">
-                停止
+              <button class="btn btn-more" @click="mobileMoreOpen = !mobileMoreOpen" :disabled="!connected" title="更多功能" style="padding:6px 8px;flex-shrink:0;font-size:12px" :style="mobileMoreOpen ? 'color:var(--blue)' : ''">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
               </button>
-              <button class="btn" @click="insertChatMessage('user')" :disabled="!connected || !chatInput.trim()" title="插入为用户消息（不触发推理）" style="font-size:11px;opacity:0.7">
-                插入用户
-              </button>
-              <button class="btn" @click="insertChatMessage('assistant')" :disabled="!connected || !chatInput.trim()" title="插入为助手消息（不触发推理）" style="font-size:11px;opacity:0.7">
-                插入助手
-              </button>
+              <input v-model="chatInput" placeholder="输入消息... (Enter 发送)" @keyup.enter="sendChat" @paste="handlePaste" :disabled="!connected">
               <button class="btn btn-send" @click="sendChat" :disabled="!connected || (!chatInput.trim() && pendingImages.length === 0 && pendingAudio.length === 0)">
                 <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
               </button>
+              <button class="btn btn-desktop-only" @click="cancelCurrentRun" :disabled="!connected || !currentRunId || !['pending','running','streaming','cancelling'].includes(currentRunStatus)" title="停止当前生成" style="font-size:11px">
+                停止
+              </button>
+              <button class="btn btn-desktop-only" @click="insertChatMessage('user')" :disabled="!connected || !chatInput.trim()" title="插入为用户消息" style="font-size:11px;opacity:0.7">
+                插入用户
+              </button>
+              <button class="btn btn-desktop-only" @click="insertChatMessage('assistant')" :disabled="!connected || !chatInput.trim()" title="插入为助手消息" style="font-size:11px;opacity:0.7">
+                插入助手
+              </button>
+            </div>
+            <!-- 移动端 + 弹出菜单 -->
+            <div class="mobile-more-popup" :class="{open: mobileMoreOpen}" @click.stop>
+              <div class="mobile-more-grid">
+                <button class="mobile-more-item" @click="triggerFileSelect(); mobileMoreOpen=false" :disabled="!connected">
+                  <div class="item-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg></div>
+                  <span>图片</span>
+                </button>
+                <button class="mobile-more-item" @click="triggerAudioFileSelect(); mobileMoreOpen=false" :disabled="!connected">
+                  <div class="item-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg></div>
+                  <span>音频</span>
+                </button>
+                <button class="mobile-more-item" @click="toggleRecording(); mobileMoreOpen=false" :disabled="!connected">
+                  <div class="item-icon" :class="{recording: isRecording}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="6" :fill="isRecording ? 'var(--red)' : 'none'"></circle></svg></div>
+                  <span>{{ isRecording ? '停止录音' : '录音' }}</span>
+                </button>
+                <button class="mobile-more-item" @click="cancelCurrentRun(); mobileMoreOpen=false" :disabled="!connected || !currentRunId">
+                  <div class="item-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg></div>
+                  <span>停止生成</span>
+                </button>
+                <button class="mobile-more-item" @click="insertChatMessage('user'); mobileMoreOpen=false" :disabled="!connected || !chatInput.trim()">
+                  <div class="item-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg></div>
+                  <span>插用户</span>
+                </button>
+                <button class="mobile-more-item" @click="insertChatMessage('assistant'); mobileMoreOpen=false" :disabled="!connected || !chatInput.trim()">
+                  <div class="item-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg></div>
+                  <span>插助手</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

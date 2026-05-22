@@ -26,10 +26,16 @@ createApp({
       wsDropdownOpen.value = false;
       wsCustomMode.value = false;
     }
+    const currentSessionTitle = computed(() => {
+      const found = sessions.value.find(s => s.session_id === sessionId.value);
+      return found ? (found.title || found.session_id) : sessionId.value || '选择会话';
+    });
     // 点击外部关闭下拉
     if (typeof document !== 'undefined') {
       document.addEventListener('click', (e) => {
         if (!e.target.closest('.ws-select')) wsDropdownOpen.value = false;
+        if (!e.target.closest('.mobile-session-bar')) mobileSessionOpen.value = false;
+        if (!e.target.closest('.mobile-more-popup') && !e.target.closest('.btn-more')) mobileMoreOpen.value = false;
       });
     }
     const connected = ref(false);
@@ -65,6 +71,8 @@ createApp({
     const latestTraceDetails = ref([]);
 
     const mobileView = ref('chat'); // 'chat' | 'debug'
+    const mobileSessionOpen = ref(false);
+    const mobileMoreOpen = ref(false);
 
     const chatBody = ref(null);
     const streamBody = ref(null);
@@ -2267,7 +2275,7 @@ createApp({
       showApiKey, formatTimeoutLabel, askUserQuestionState,
       addImageFiles, removePendingImage, clearPendingImages, handlePaste, handleFileSelect, triggerFileSelect,
       addAudioFiles, removePendingAudio, clearPendingAudio, triggerAudioFileSelect, handleAudioFileSelect, toggleRecording, formatDuration,
-      mobileView, switchMobileView,
+      mobileView, switchMobileView, mobileSessionOpen, mobileMoreOpen, currentSessionTitle,
     };
   }
 }).mount('#app');
