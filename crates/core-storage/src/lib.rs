@@ -4,6 +4,7 @@
 //! 写操作必须走 Core API，AI 只读导出文件。
 
 use core_protocol::*;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// 存储配置
@@ -237,55 +238,54 @@ impl Storage for FileStorage {
         // 2. 复制 messages（保留原 message_id，更新 session_id）
         let messages: Vec<Message> = self.get_messages(src_session_id).await?;
         if !messages.is_empty() {
-            let mut remapped: Vec<Message> = Vec::with_capacity(messages.len());
+            let mut lines = String::new();
             for mut msg in messages {
                 msg.session_id = dst_session_id.to_string();
-                remapped.push(msg);
-            }
-            // 写入单个 messages.jsonl
-            let path = self.messages_file(dst_session_id);
-            let mut lines = String::new();
-            for msg in &remapped {
-                lines.push_str(&serde_json::to_string(msg).map_err(|e| e.to_string())?);
+                lines.push_str(&serde_json::to_string(&msg).map_err(|e| e.to_string())?);
                 lines.push('\n');
             }
             use tokio::io::AsyncWriteExt;
             let mut file = tokio::fs::OpenOptions::new()
                 .create(true).write(true).truncate(true)
-                .open(&path).await.map_err(|e| e.to_string())?;
+                .open(&self.messages_file(dst_session_id)).await.map_err(|e| e.to_string())?;
             file.write_all(lines.as_bytes()).await.map_err(|e| e.to_string())?;
         }
 
-        // 3. 复制 context_state，生成新 context_id，更新 session_id
-        if let Some(mut ctx) = self.get_context_state(src_session_id).await? {
-            ctx.context_id = format!("ctx_{}", uuid::Uuid::new_v4());
-            ctx.session_id = dst_session_id.to_string();
-            ctx.created_at = chrono::Utc::now();
-            self.write_json(&self.context_file(dst_session_id), &ctx).await?;
-        }
-
-        // 4. 复制 seeds，生成新 seed_id，更新 session_id
+        // 3. 复制 seeds，生成新 seed_id，记录映射关系（旧→新）
         let seeds: Vec<ContextSeed> = self.get_seeds(src_session_id).await?;
+        let mut seed_id_map: HashMap<String, String> = HashMap::new();
         if !seeds.is_empty() {
-            let path = self.seeds_file(dst_session_id);
             let mut lines = String::new();
             for mut seed in seeds {
+                let old_id = seed.seed_id.clone();
                 seed.seed_id = format!("seed_{}", uuid::Uuid::new_v4());
                 seed.session_id = dst_session_id.to_string();
+                seed_id_map.insert(old_id, seed.seed_id.clone());
                 lines.push_str(&serde_json::to_string(&seed).map_err(|e| e.to_string())?);
                 lines.push('\n');
             }
             use tokio::io::AsyncWriteExt;
             let mut file = tokio::fs::OpenOptions::new()
                 .create(true).write(true).truncate(true)
-                .open(&path).await.map_err(|e| e.to_string())?;
+                .open(&self.seeds_file(dst_session_id)).await.map_err(|e| e.to_string())?;
             file.write_all(lines.as_bytes()).await.map_err(|e| e.to_string())?;
+        }
+
+        // 4. 复制 context_state，生成新 context_id，remap base_seed_ids
+        if let Some(mut ctx) = self.get_context_state(src_session_id).await? {
+            ctx.context_id = format!("ctx_{}", uuid::Uuid::new_v4());
+            ctx.session_id = dst_session_id.to_string();
+            ctx.created_at = chrono::Utc::now();
+            // 将 base_seed_ids 中的旧 seed_id 映射为新 seed_id
+            ctx.rules.base_seed_ids = ctx.rules.base_seed_ids.iter()
+                .filter_map(|old_id| seed_id_map.get(old_id).cloned())
+                .collect();
+            self.write_json(&self.context_file(dst_session_id), &ctx).await?;
         }
 
         // 5. 复制 runs，更新 session_id
         let runs: Vec<Run> = self.get_runs(src_session_id).await?;
         if !runs.is_empty() {
-            let path = self.runs_file(dst_session_id);
             let mut lines = String::new();
             for mut run in runs {
                 run.session_id = dst_session_id.to_string();
@@ -295,7 +295,7 @@ impl Storage for FileStorage {
             use tokio::io::AsyncWriteExt;
             let mut file = tokio::fs::OpenOptions::new()
                 .create(true).write(true).truncate(true)
-                .open(&path).await.map_err(|e| e.to_string())?;
+                .open(&self.runs_file(dst_session_id)).await.map_err(|e| e.to_string())?;
             file.write_all(lines.as_bytes()).await.map_err(|e| e.to_string())?;
         }
 
