@@ -57,6 +57,12 @@
     <div class="main">
       <!-- Right: Events & Tools -->
       <div class="right">
+        <div class="mobile-debug-header">
+          <button class="btn" @click="switchMobileView('chat')" style="padding:6px 8px;font-size:12px">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+            返回对话
+          </button>
+        </div>
         <div class="tabs">
           <div class="tab" :class="{active: rightTab==='summary'}" @click="rightTab='summary'">
             <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10"></path><path d="M18 20V4"></path><path d="M6 20v-4"></path></svg>
@@ -612,6 +618,20 @@
           </div>
         </div>
 
+        <!-- Mobile Session Bar -->
+        <div class="mobile-session-bar">
+          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+          <select v-model="sessionId" @change="selectSession(sessionId)" style="flex:1;min-width:0">
+            <option v-for="s in sessions" :key="s.session_id" :value="s.session_id">{{ s.title || s.session_id }}</option>
+          </select>
+          <button class="btn" @click="createNewSession" :disabled="!connected" style="padding:6px 8px;font-size:12px" title="新建会话">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          </button>
+          <button class="btn" @click="loadSessions" :disabled="!connected" style="padding:6px 8px;font-size:12px" title="刷新">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+          </button>
+        </div>
+
         <div class="chat-container">
           <div class="chat-header">
             <h3>
@@ -766,7 +786,17 @@
         </div>
       </div>
 
-      
+    <!-- Mobile Bottom Bar -->
+    <div class="mobile-bottom-bar">
+      <button class="mobile-tab" :class="{active: mobileView === 'chat'}" @click="switchMobileView('chat')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+        对话
+      </button>
+      <button class="mobile-tab" :class="{active: mobileView === 'debug'}" @click="switchMobileView('debug')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10"></path><path d="M18 20V4"></path><path d="M6 20v-4"></path></svg>
+        调试
+      </button>
+    </div>
 
     <!-- Preset Tools Modal -->
     <div class="modal-overlay" v-if="showPresetToolsModal" @click="showPresetToolsModal = false">

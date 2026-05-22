@@ -64,6 +64,8 @@ createApp({
     const latestToolChainReport = ref(null);
     const latestTraceDetails = ref([]);
 
+    const mobileView = ref('chat'); // 'chat' | 'debug'
+
     const chatBody = ref(null);
     const streamBody = ref(null);
     const rawBody = ref(null);
@@ -416,6 +418,18 @@ createApp({
         failed: '失败',
       };
       return map[status] || status || '未知';
+    }
+
+    function switchMobileView(view) {
+      mobileView.value = view;
+      const rightPanel = document.querySelector('.right');
+      if (rightPanel) {
+        if (view === 'debug') {
+          rightPanel.classList.add('mobile-show');
+        } else {
+          rightPanel.classList.remove('mobile-show');
+        }
+      }
     }
 
     function formatTimeoutLabel(timeoutMs) {
@@ -2253,6 +2267,7 @@ createApp({
       showApiKey, formatTimeoutLabel, askUserQuestionState,
       addImageFiles, removePendingImage, clearPendingImages, handlePaste, handleFileSelect, triggerFileSelect,
       addAudioFiles, removePendingAudio, clearPendingAudio, triggerAudioFileSelect, handleAudioFileSelect, toggleRecording, formatDuration,
+      mobileView, switchMobileView,
     };
   }
 }).mount('#app');

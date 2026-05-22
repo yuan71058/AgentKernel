@@ -261,3 +261,80 @@ textarea.config-input { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco
 .modal-close:hover { background: var(--bg2); color: var(--text); }
 .modal-body { padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
 
+/* ─── 移动端适配 ─────────────────────────── */
+@media (max-width: 768px) {
+  /* Header 紧凑 */
+  .header { padding: 8px 12px; gap: 8px; }
+  .logo span { display: none; }
+  .logo { font-size: 14px; }
+  .ws-select { max-width: none; }
+  .ws-select-trigger { padding: 6px 10px; font-size: 12px; }
+  .status { display: none; }
+
+  /* 主布局切换为列，chat 优先 */
+  .main { flex-direction: column; position: relative; }
+  .left { width: 100%; flex: 1; min-width: 0; border-left: none; box-shadow: none; flex-direction: column; overflow: hidden; }
+  .right { display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 50; background: var(--bg); padding-bottom: 52px; overflow: auto; flex-direction: column; }
+  .right.mobile-show { display: flex; }
+
+  /* 侧边栏隐藏，改用顶部选择器 */
+  .session-sidebar { display: none; }
+  .chat-container { width: 100%; min-width: 0; }
+
+  /* 移动端顶部会话选择器 */
+  .mobile-session-bar { display: flex !important; }
+  .mobile-bottom-bar { display: flex !important; }
+  .mobile-debug-header { display: flex !important; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg); flex-shrink: 0; }
+  .floating-stats { display: none !important; }
+
+  /* 聊天头部紧凑 */
+  .chat-header { padding: 8px 12px; flex-wrap: wrap; gap: 6px; }
+  .chat-header h3 { font-size: 13px; }
+  .chat-header h3 svg { display: none; }
+  .chat-controls { gap: 4px; }
+  .chat-controls input { width: 100px; font-size: 11px; }
+
+  /* 聊天输入区 */
+  .chat-input { gap: 4px; padding: 6px 8px; }
+  .chat-input input { font-size: 14px; min-width: 0; }
+  .chat-input .btn { padding: 6px 8px; font-size: 11px; }
+  .chat-input .btn-send { padding: 6px 10px; }
+  .chat-input-wrapper { margin-bottom: 52px; }
+
+  /* 消息 */
+  .chat-body { padding: 8px 8px 60px 8px; }
+  .msg { max-width: 92%; font-size: 13px; }
+  .msg-wrapper.assistant .msg { max-width: 92%; }
+
+  /* Right 面板内部 */
+  .right .tabs { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 0 8px; flex-shrink: 0; }
+  .right .tab { white-space: nowrap; padding: 8px 10px; font-size: 11px; }
+  .right .tab svg.icon-sm { display: none; }
+  .config-body { padding: 12px; }
+  .config-row { flex-direction: column; gap: 4px; }
+  .config-row label { font-size: 12px; }
+  .config-input { font-size: 13px; padding: 8px 10px; }
+  .config-section { padding: 12px; }
+
+  /* 通讯日志 / 事件流 */
+  .stream-body { padding: 8px; }
+  .raw-card { font-size: 12px; }
+  .raw-card-header { flex-wrap: wrap; gap: 4px; }
+
+  /* Modal */
+  .modal-content { max-width: 95vw; max-height: 90vh; }
+  .modal-header { padding: 12px 16px; font-size: 14px; }
+  .modal-body { padding: 12px; }
+}
+
+/* 移动端专属组件 - 默认隐藏 */
+.mobile-debug-header { display: none; }
+.mobile-session-bar { display: none; padding: 8px 12px; gap: 8px; align-items: center; border-bottom: 1px solid var(--border); background: var(--bg); }
+.mobile-session-bar select { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); font-size: 13px; color: var(--text); }
+.mobile-session-bar .btn { flex-shrink: 0; }
+
+.mobile-bottom-bar { display: none; position: fixed; bottom: 0; left: 0; right: 0; background: var(--bg); border-top: 1px solid var(--border); z-index: 60; padding: 4px 0; padding-bottom: env(safe-area-inset-bottom, 4px); justify-content: space-around; }
+.mobile-bottom-bar .mobile-tab { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 16px; font-size: 10px; color: var(--text3); cursor: pointer; border: none; background: none; }
+.mobile-bottom-bar .mobile-tab.active { color: var(--blue); }
+.mobile-bottom-bar .mobile-tab svg { width: 20px; height: 20px; }
+
