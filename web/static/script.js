@@ -765,6 +765,16 @@ createApp({
             loadSessions();
           }
 
+          // session.fork 响应 → 刷新 session 列表并切换到新 session
+          if (msg.success && respCmd === 'session.fork') {
+            const newId = msg.payload?.new_session_id || '';
+            addLocalNotice('分叉', `已分叉到 ${newId}`);
+            loadSessions();
+            if (newId) {
+              selectSession(newId);
+            }
+          }
+
           // session.send 响应 → 如果 model.completed 还没来，用 response payload 兜底显示
           if (msg.success && respCmd === 'session.send' && msg.payload?.run_id && isCurrentSession(respSessionId)) {
             currentRunId.value = msg.payload.run_id;
@@ -1020,6 +1030,21 @@ createApp({
         return;
       }
       sendCommand('session.delete', {}, id);
+    }
+
+    function forkSession(srcId) {
+      if (!ws || !srcId) return;
+      const target = sessions.value.find(s => s.session_id === srcId);
+      const title = target?.title || srcId;
+      const dstId = prompt(`分叉 session "${title}"\n\n请输入新 session ID（留空自动生成）：`);
+      if (dstId === null) return; // 用户取消
+      const newId = dstId.trim() || `sess_fork_${Date.now()}`;
+      if (sessions.value.some(s => s.session_id === newId)) {
+        addLocalNotice('分叉', `session "${newId}" 已存在，请换一个 ID`);
+        return;
+      }
+      sendCommand('session.fork', { source_session_id: srcId, new_session_id: newId });
+      addLocalNotice('分叉', `正在从 ${title} 分叉到 ${newId}...`);
     }
 
     function selectSession(id) {
@@ -1991,6 +2016,7 @@ createApp({
             'session.info': '会话详情响应',
             'session.delete': '删除会话响应',
             'session.clear': '清空上下文响应',
+            'session.fork': '分叉会话响应',
             'session.list': '会话列表响应',
             'tool.register': '注册工具响应',
             'tool.unregister': '注销工具响应',
@@ -2262,7 +2288,7 @@ createApp({
       latestToolChainReport, latestTraceDetails, formatToolChainIds, toolChainStatusText, toolChainIssueCount,
       connect, disconnect, sendChat, insertChatMessage, cancelCurrentRun, sendRaw, sendToolResult,
       defineClientTool, handleToolCallRequest,
-      loadSessions, selectSession, createNewSession, deleteSession,
+      loadSessions, selectSession, createNewSession, deleteSession, forkSession,
       registerPresetTool, registerPresetTools,
       saveProvider, loadProvider, applyTemplate,
       saveSystemPrompt, loadSystemPrompt, loadTools,

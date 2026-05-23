@@ -608,6 +608,15 @@
                 >
                   删
                 </button>
+                <button
+                  class="btn"
+                  @click.stop="forkSession(s.session_id)"
+                  :disabled="!connected"
+                  style="padding:2px 6px;font-size:10px;line-height:1.2;color:var(--blue)"
+                  title="分叉 session"
+                >
+                  叉
+                </button>
               </div>
               <div class="session-item-meta">
                 <span style="font-family:ui-monospace,monospace">{{ (s.session_id).slice(0,8) }}</span>
@@ -928,6 +937,6 @@
       </div>
   </div>
 </div>
-<script src="script.js"></script>
+<script src="script.js?v=20260519"></script>
 </body>
 </html>
