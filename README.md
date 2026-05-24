@@ -44,71 +44,76 @@ Because it serves as the core communication base for AI, you no longer need to w
 
 AgentKernel is neither a Chat UI nor a Business Agent, but an **Agent Runtime Kernel**.
 
-**Core Principle: The Kernel handles the runtime; the Business Side handles the orchestration.**
+**Core Principle: AgentKernel handles the AI runtime; your project owns its product logic.**
 
-| ⚙️ AgentKernel (Runtime Core)       | 🧠 Business Side (Application Orchestration)           |
+| ⚙️ AgentKernel Kernel       | 🧠 Your Project           |
 | :--------------------------- | :---------------------- |
-| **Model Interaction**: Model calls, concurrency scheduling | **Tool Implementation**: Specific tool execution logic and permissions |
-| **State Management**: Session management, persistent storage | **Business Logic**: Business prompts, memory system extraction |
-| **Context**: Context building, exposing threshold events | **Compression Strategy**: MCP orchestration, smart context compression |
-| **Communication Protocol**: WebSocket IPC, event stream distribution | **Frontend Interaction**: Final product UI display |
+| Connects models, manages sessions, maintains context | Decides how users interact and how the product is displayed |
+| Receives messages, runs inference, pushes progress events | Registers your own capabilities, such as database lookup, messaging, or device control |
+| Sends a request when AI needs a capability | Executes the capability and returns the result to the Kernel |
 
 > 💡 **Integration Note**
-> AgentKernel is better suited as a "single execution system" Runtime core: the same business execution side can reuse multiple `session`s.\
-> For multi-user shared sessions or collaborative viewing, it is recommended that the business side handles distribution, broadcasting, and permission control at the upper layer, rather than having multiple client endpoints directly connect to the same `session` in the Core.\
+> AgentKernel is better suited as an independently running AI kernel: your project connects to it after startup and uses different `session`s as needed.\
+> For multi-user shared sessions or collaborative viewing, it is recommended that your project handles distribution, broadcasting, and permission control at the upper layer, rather than having multiple client endpoints directly connect to the same `session` in the Core.\
 > The Core is responsible for the runtime and protocol boundaries, not multi-user collaborative orchestration.
 
 ### Recommended Integration Method
 
 ```mermaid
 flowchart LR
-    U[User Browser] --> B[Business Website / Python or Node.js Microservice]
-    B -->|Establish long-term WS on startup| K[AgentKernel Core]
-    B -->|Reuse the same connection for different session_ids| K
-    K -->|response / event / tool.call.request| B
-    B -->|HTTP / SSE / WebSocket| U
+    K[Start AgentKernel\nlistens on ws://localhost:9991/ws]
+    P[Your Project\nWebsite / App / Backend]
+    U[User]
+
+    P -->|Connect to the Kernel port| K
+    U -->|Send a message| P
+    P -->|Forward message to Kernel| K
+    P -->|Register capabilities\ne.g. database / messaging / device actions| K
+    K -->|When AI needs a capability\ncall back your project| P
+    P -->|Execute capability\nand return result| K
+    K -->|Return AI response and progress| P
+    P -->|Display to user| U
 ```
 
-- It is recommended that the business service maintains a long-term WebSocket connection with the Core upon startup, and reuses this connection to process multiple `session`s.
-- User requests first enter the business service, which then determines the `session`, permissions, context, and tool execution.
-- For multi-user shared sessions, it is recommended to broadcast and distribute internally within the business service. Do not let multiple user endpoints directly connect to the Core's same `session`.
+- Start AgentKernel first. It listens on a WebSocket port.
+- Your project connects to this port, then sends messages, registers capabilities, and receives AI progress events.
+- When AI needs a capability, AgentKernel calls back your project. Your project executes it and returns the result, then the Kernel continues inference.
+- Your project can reuse the same connection for multiple `session`s.
 
 ## 🏗️ Architecture & Principles
 
-AgentKernel uses **WebSocket** as its core bidirectional communication protocol to achieve complete decoupling of state and control:
+AgentKernel uses **WebSocket** as its core bidirectional communication protocol. In plain words: your project sends messages to the Kernel, the Kernel talks to the model, and if the model needs a capability, the Kernel calls your project back to execute it.
 
 ```mermaid
 sequenceDiagram
-    participant C as Business Client
-    participant K as AgentKernel
-    participant M as LLM (OpenAI/Claude)
-    
-    Note over C, K: 1. Initialization & Configuration
-    C->>K: [Command] tool.register (Dynamically register tool)
-    K-->>C: Persist Schema and ready
+    participant U as User
+    participant P as Your Project
+    participant K as AgentKernel Kernel
+    participant M as AI Model
 
-    Note over C, M: 2. User Interaction & Context Processing
-    C->>K: [Command] session.send (Send user query)
-    K->>K: Persist message / Build Active Context View
+    P->>K: Connect to Kernel port after startup
+    P->>K: Register capabilities, such as search, messaging, or file actions
+    U->>P: Ask a question
+    P->>K: Send the user's message to the Kernel
+    K->>M: Ask AI to generate a response
+    M-->>K: Return text, streamed back as it arrives
+    K-->>P: Keep sending AI progress and output
 
-    Note over K, M: 3. Model Inference & Event Stream
-    K->>M: Initiate request (Prompt + Context + Tools)
-    M-->>K: Stream return
-
-    alt Model outputs normal text
-        K-->>C: [Event] model.delta (Stream pushed to frontend)
-    else Model triggers Tool Call
-        M-->>K: Return tool_calls intent
-        K-->>C: [Event] tool.call.request (Request business side to execute)
-        Note over C: Client executes business logic locally
-        C->>K: [Command] tool.execute.result (Return execution result)
-        K->>M: Request model again with tool result
-        M-->>K: Continue inference based on tool result
-        K-->>C: [Event] model.delta (Stream pushed to frontend)
+    alt AI needs a capability
+        K-->>P: Ask your project to execute a capability
+        P->>P: Your project executes it
+        P->>K: Return execution result to Kernel
+        K->>M: Continue AI generation with the result
+        M-->>K: Continue generating
+        K-->>P: Return final response
+    else AI does not need a capability
+        K-->>P: Return final response directly
     end
 
-    K-->>C: [Event] model.completed (Single run finished)
+    P-->>U: Show the AI response
 ```
+
+In this flow, AgentKernel does not care how your business works and does not force your project to use a specific language. Your project only needs to connect via WebSocket, send messages, register capabilities, and handle callbacks.
 
 ### ✨ Core Features
 

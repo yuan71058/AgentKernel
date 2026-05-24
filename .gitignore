@@ -64,3 +64,5 @@ coverage/
 
 tem/
 deploy.sh
+
+部署到fly.md

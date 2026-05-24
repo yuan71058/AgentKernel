@@ -44,71 +44,76 @@
 
 AgentKernel 不是聊天 UI，也不是业务 Agent，而是 **Agent Runtime Kernel**。
 
-**核心原则：Kernel 只管运行时，业务端只管编排。**
+**核心原则：AgentKernel 只负责 AI 运行时，你的项目负责自己的业务。**
 
-| ⚙️ AgentKernel (运行时核心)       | 🧠 业务端 (应用编排)           |
+| ⚙️ AgentKernel 内核       | 🧠 你的项目           |
 | :--------------------------- | :---------------------- |
-| **模型交互**：模型调用、并发调度           | **工具实现**：具体工具执行逻辑与权限    |
-| **状态管理**：Session 管理、持久化存储    | **业务逻辑**：业务提示词、记忆系统提取   |
-| **上下文**：Context 构建、主动暴露阈值事件  | **压缩策略**：MCP 编排、智能上下文压缩 |
-| **通信协议**：WebSocket IPC、事件流分发 | **前端交互**：最终产品 UI 展示     |
+| 连接模型、管理会话、维护上下文 | 决定用户怎么用、页面怎么展示 |
+| 接收消息、推理、推送过程事件 | 注册你自己的能力，如查数据库、发消息、操作设备 |
+| 当 AI 需要调用能力时发出请求 | 收到请求后执行能力，并把结果回传给内核 |
 
 > 💡 **接入注意**
-> AgentKernel 更适合作为“单一执行体系”的 Runtime 内核：同一套业务执行端可复用多个 `session`。\
-> 如果是多用户共享会话或协同查看，建议由业务端在上层做分流、广播和权限控制，而不是让多个用户端直接连接 Core 的同一个 `session`。\
+> AgentKernel 更适合作为独立运行的 AI 内核：你的项目启动后连接它，然后按不同 `session` 使用。\
+> 如果是多人共享会话或协同查看，建议由你的项目在上层做分流、广播和权限控制，而不是让多个用户端直接连接 Core 的同一个 `session`。\
 > Core 负责运行时与协议边界，不负责多用户协同编排。
 
 ### 推荐接入方式
 
 ```mermaid
 flowchart LR
-    U[用户浏览器] --> B[业务网站 / Python or Node.js 微服务]
-    B -->|启动时建立长期 WS| K[AgentKernel Core]
-    B -->|按不同 session_id 复用同一连接| K
-    K -->|response / event / tool.call.request| B
-    B -->|HTTP / SSE / WebSocket| U
+    K[启动 AgentKernel\n监听 ws://localhost:9991/ws]
+    P[你的项目\n网站 / App / 服务端]
+    U[用户]
+
+    P -->|连接内核端口| K
+    U -->|发送消息| P
+    P -->|把消息交给内核| K
+    P -->|注册能力\n例如查数据库 / 发消息 / 操作设备| K
+    K -->|AI 需要能力时\n回调你的项目| P
+    P -->|执行能力后\n把结果交回内核| K
+    K -->|返回 AI 回复和过程状态| P
+    P -->|展示给用户| U
 ```
 
-- 推荐由业务服务在启动时与 Core 保持长期 WebSocket 连接，后续复用这条连接处理多个 `session`。
-- 用户请求先进入业务服务，再由业务服务决定 `session`、权限、上下文和工具执行。
-- 如果是多人共享会话，建议由业务服务内部做广播和分流，不要让多个用户端直接连接 Core 的同一个 `session`。
+- 先启动 AgentKernel，它会监听一个 WebSocket 端口。
+- 你的项目连接这个端口，然后发送消息、注册能力、接收 AI 过程事件。
+- 当 AI 需要调用能力时，AgentKernel 会回调你的项目；你的项目执行后把结果回传，内核继续推理。
+- 你的项目可以复用同一个连接处理多个 `session`。
 
 ## 🏗️ 架构与原理
 
-AgentKernel 采用 **WebSocket** 作为核心双向通信协议，实现状态与控制的完全解耦：
+AgentKernel 采用 **WebSocket** 作为核心双向通信协议。你可以把它理解成：你的项目把消息交给内核，内核负责和模型沟通；如果模型需要能力，内核再回调你的项目去执行。
 
 ```mermaid
 sequenceDiagram
-    participant C as 业务端 Client
-    participant K as AgentKernel
-    participant M as LLM (OpenAI/Claude)
-    
-    Note over C, K: 1. 初始化与配置阶段
-    C->>K: [Command] tool.register (动态注册工具)
-    K-->>C: 持久化 Schema 并准备就绪
+    participant U as 用户
+    participant P as 你的项目
+    participant K as AgentKernel 内核
+    participant M as AI 模型
 
-    Note over C, M: 2. 用户交互与上下文处理
-    C->>K: [Command] session.send (发送用户提问)
-    K->>K: 消息落盘 / 构建 Active Context View
+    P->>K: 启动后连接内核端口
+    P->>K: 注册能力（比如查资料、发消息、操作文件）
+    U->>P: 输入问题
+    P->>K: 把用户消息交给内核
+    K->>M: 请求 AI 生成回复
+    M-->>K: 返回文字，内核边收边推给你的项目
+    K-->>P: 持续返回 AI 输出过程
 
-    Note over K, M: 3. 模型推理与事件流
-    K->>M: 发起请求 (Prompt + Context + Tools)
-    M-->>K: Stream 流式返回
-
-    alt 模型输出普通文本
-        K-->>C: [Event] model.delta (流式推送到前端展示)
-    else 模型触发工具调用 (Tool Call)
-        M-->>K: 返回 tool_calls 意图
-        K-->>C: [Event] tool.call.request (请求业务端执行)
-        Note over C: Client 本地执行业务逻辑
-        C->>K: [Command] tool.execute.result (回传执行结果)
-        K->>M: 携带工具结果再次请求模型
-        M-->>K: 基于工具结果继续推理
-        K-->>C: [Event] model.delta (流式推送到前端展示)
+    alt AI 需要调用能力
+        K-->>P: 通知你的项目执行某个能力
+        P->>P: 你的项目自己执行能力
+        P->>K: 把执行结果交回内核
+        K->>M: 带着结果继续请求 AI
+        M-->>K: 继续生成回复
+        K-->>P: 返回最终回复
+    else AI 不需要能力
+        K-->>P: 直接返回最终回复
     end
 
-    K-->>C: [Event] model.completed (单次运行结束)
+    P-->>U: 展示 AI 回复
 ```
+
+这条链路里，AgentKernel 不关心你的业务怎么做，也不强迫你的项目用某种语言。你的项目只需要会连接 WebSocket、发送消息、注册能力、处理回调。
 
 ### ✨ 核心特性
 
