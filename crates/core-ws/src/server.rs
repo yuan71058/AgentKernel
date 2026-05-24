@@ -188,7 +188,7 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
         success: true,
         payload: json!({
             "connection_id": conn_id,
-            "server_version": "1.0.0",
+            "server_version": env!("CARGO_PKG_VERSION"),
             "commands": [
                 commands::SEND_MESSAGE,
                 commands::MESSAGE_INSERT,

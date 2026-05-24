@@ -4,12 +4,13 @@ set -euo pipefail
 # ─── 配置 ─────────────────────────────────
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BINARY_NAME="agentkernel"
+VERSION="$(cargo metadata --manifest-path "$PROJECT_DIR/Cargo.toml" --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
 
 usage() {
   echo "用法: ./build.sh [选项]"
   echo ""
   echo "选项:"
-  echo "  (无)          编译本机版本"
+  echo "  (无)          编译本机版本（输出到 dist/${BINARY_NAME}-v${VERSION}）"
   echo "  --linux       Linux x86_64 静态二进制 (musl)"
   echo "  --windows     Windows x86_64 exe (mingw)"
   echo "  --all         本机 + Linux + Windows 全部编译"
@@ -48,10 +49,10 @@ if [ "$BUILD_NATIVE" = true ]; then
 
   BIN="target/release/$BINARY_NAME"
   if [ ! -f "$BIN" ]; then echo "❌ 编译失败"; exit 1; fi
-  cp "$BIN" "$OUTPUT_DIR/$BINARY_NAME"
-  chmod +x "$OUTPUT_DIR/$BINARY_NAME"
-  SIZE=$(du -h "$OUTPUT_DIR/$BINARY_NAME" | cut -f1)
-  echo "✅ 本机版本: $OUTPUT_DIR/$BINARY_NAME ($SIZE)"
+  cp "$BIN" "$OUTPUT_DIR/${BINARY_NAME}-v${VERSION}"
+  chmod +x "$OUTPUT_DIR/${BINARY_NAME}-v${VERSION}"
+  SIZE=$(du -h "$OUTPUT_DIR/${BINARY_NAME}-v${VERSION}" | cut -f1)
+  echo "✅ 本机版本: $OUTPUT_DIR/${BINARY_NAME}-v${VERSION} ($SIZE)"
   echo ""
   build_ok=$((build_ok+1))
 fi
@@ -59,7 +60,7 @@ fi
 # ─── Linux x86_64 ────────────────────────
 if [ "$BUILD_LINUX" = true ]; then
   TARGET="x86_64-unknown-linux-musl"
-  OUT="$OUTPUT_DIR/${BINARY_NAME}-linux-amd64"
+  OUT="$OUTPUT_DIR/${BINARY_NAME}-v${VERSION}-linux-amd64"
 
   echo "🔨 交叉编译 Linux amd64 ($TARGET)"
   CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-musl-gcc \
@@ -79,7 +80,7 @@ fi
 # ─── Windows x86_64 ──────────────────────
 if [ "$BUILD_WINDOWS" = true ]; then
   TARGET="x86_64-pc-windows-gnu"
-  OUT="$OUTPUT_DIR/${BINARY_NAME}-windows-amd64.exe"
+  OUT="$OUTPUT_DIR/${BINARY_NAME}-v${VERSION}-windows-amd64.exe"
 
   echo "🔨 交叉编译 Windows amd64 ($TARGET)"
   CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \

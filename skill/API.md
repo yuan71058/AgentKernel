@@ -1,6 +1,6 @@
 # AgentKernel WebSocket API 文档
 
-> **版本**: v1.0.0  
+> **版本**: v1.1.0  
 > **最后更新**: 2026-05-22  
 > **状态**: 基于代码分析 + 实际数据包抓取验证
 
@@ -200,7 +200,7 @@ async def connect():
       "tool.execute.result"
     ],
     "connection_id": "d748bd30-c1fa-4e08-8312-f3dbbe5f3f02",
-    "server_version": "1.0.0"
+    "server_version": "1.1.0"
   }
 }
 ```
