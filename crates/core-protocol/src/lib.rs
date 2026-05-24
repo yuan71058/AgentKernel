@@ -159,7 +159,132 @@ impl Message {
 pub struct Tool {
     pub name: String,
     pub description: String,
+    /// 原始注册 schema，用于展示、持久化和跨 provider 重新编译。
     pub input_schema: serde_json::Value,
+    /// provider-specific 编译结果，key 使用协议小写名（claude/openai）。
+    #[serde(default)]
+    pub compiled_schemas: HashMap<String, serde_json::Value>,
+}
+
+impl Tool {
+    pub fn with_compiled_schemas(mut self) -> Result<Self, String> {
+        self.compiled_schemas = compile_tool_schemas_for_providers(&self.input_schema)?;
+        Ok(self)
+    }
+
+    pub fn schema_for_protocol(&self, protocol: &Protocol) -> serde_json::Value {
+        let key = protocol.schema_key();
+        self.compiled_schemas
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| self.input_schema.clone())
+    }
+}
+
+impl Protocol {
+    pub fn schema_key(&self) -> &'static str {
+        match self {
+            Protocol::Claude => "claude",
+            Protocol::OpenAI => "openai",
+        }
+    }
+}
+
+pub fn compile_tool_schemas_for_providers(schema: &serde_json::Value) -> Result<HashMap<String, serde_json::Value>, String> {
+    let mut compiled = HashMap::new();
+    compiled.insert("openai".to_string(), compile_openai_tool_schema(schema)?);
+    compiled.insert("claude".to_string(), compile_claude_tool_schema(schema)?);
+    Ok(compiled)
+}
+
+fn compile_openai_tool_schema(schema: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let Some(obj) = schema.as_object() else {
+        return Err("tool schema must be a JSON object".to_string());
+    };
+    if obj.get("type").and_then(|v| v.as_str()) == Some("object") || obj.contains_key("properties") {
+        return Ok(normalize_object_schema(schema));
+    }
+    Err("tool schema must be an object schema or contain properties".to_string())
+}
+
+fn compile_claude_tool_schema(schema: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let Some(obj) = schema.as_object() else {
+        return Err("Claude tool input_schema must be a JSON object".to_string());
+    };
+
+    if obj.get("type").and_then(|v| v.as_str()) == Some("object") || obj.contains_key("properties") {
+        let mut normalized = normalize_object_schema(schema);
+        if let Some(map) = normalized.as_object_mut() {
+            for key in ["oneOf", "anyOf", "allOf", "enum", "not"] {
+                map.remove(key);
+            }
+        }
+        return Ok(normalized);
+    }
+
+    for key in ["oneOf", "anyOf", "allOf"] {
+        if let Some(arr) = obj.get(key).and_then(|v| v.as_array()) {
+            return merge_object_variants_for_claude(key, arr);
+        }
+    }
+
+    Err("Claude tool input_schema top-level must be object and cannot be adapted from this schema".to_string())
+}
+
+fn normalize_object_schema(schema: &serde_json::Value) -> serde_json::Value {
+    let mut map = schema.as_object().cloned().unwrap_or_default();
+    map.insert("type".to_string(), serde_json::json!("object"));
+    if !map.get("properties").map(|v| v.is_object()).unwrap_or(false) {
+        map.insert("properties".to_string(), serde_json::json!({}));
+    }
+    if !map.get("required").map(|v| v.is_array()).unwrap_or(false) {
+        map.insert("required".to_string(), serde_json::json!([]));
+    }
+    serde_json::Value::Object(map)
+}
+
+fn merge_object_variants_for_claude(key: &str, variants: &[serde_json::Value]) -> Result<serde_json::Value, String> {
+    if variants.is_empty() {
+        return Err(format!("Claude tool input_schema top-level {key} has no variants to adapt"));
+    }
+
+    let mut properties = serde_json::Map::new();
+    let mut required = std::collections::BTreeSet::new();
+    let mut description_parts = Vec::new();
+
+    for variant in variants {
+        let normalized = normalize_object_schema(variant);
+        let Some(obj) = normalized.as_object() else { continue; };
+        if obj.get("type").and_then(|v| v.as_str()) != Some("object") {
+            return Err(format!("Claude tool input_schema top-level {key} contains a non-object variant"));
+        }
+        if let Some(desc) = obj.get("description").and_then(|v| v.as_str()) {
+            description_parts.push(desc.to_string());
+        }
+        if let Some(props) = obj.get("properties").and_then(|v| v.as_object()) {
+            for (name, prop) in props {
+                properties.entry(name.clone()).or_insert_with(|| prop.clone());
+            }
+        }
+        if let Some(reqs) = obj.get("required").and_then(|v| v.as_array()) {
+            for req in reqs.iter().filter_map(|v| v.as_str()) {
+                required.insert(req.to_string());
+            }
+        }
+    }
+
+    let mut out = serde_json::Map::new();
+    out.insert("type".to_string(), serde_json::json!("object"));
+    if !description_parts.is_empty() {
+        out.insert("description".to_string(), serde_json::json!(format!(
+            "Adapted from top-level {key}. Variants: {}",
+            description_parts.join(" | ")
+        )));
+    }
+    out.insert("properties".to_string(), serde_json::Value::Object(properties));
+    out.insert("required".to_string(), serde_json::json!(required.into_iter().collect::<Vec<_>>()));
+    out.insert("additionalProperties".to_string(), serde_json::json!(true));
+    Ok(serde_json::Value::Object(out))
 }
 
 /// 工具注册元数据

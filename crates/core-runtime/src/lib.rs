@@ -19,7 +19,7 @@
 //! // 注册工具
 //! kernel.register_tool(
 //!     "",
-//!     Tool { name: "calc".into(), description: "计算器".into(), input_schema: serde_json::json!({}) },
+//!     Tool { name: "calc".into(), description: "计算器".into(), input_schema: serde_json::json!({}), compiled_schemas: Default::default() },
 //!     ToolRegistration {
 //!         tool_name: "calc".into(),
 //!         description: "计算器".into(),
@@ -169,7 +169,6 @@ pub struct RuntimeErrorReport {
     pub stage: String,
     pub retryable: bool,
     pub message: String,
-    pub raw_error: String,
 }
 
 impl RuntimeErrorReport {
@@ -178,31 +177,29 @@ impl RuntimeErrorReport {
         stage: impl Into<String>,
         retryable: bool,
         message: impl Into<String>,
-        raw_error: impl Into<String>,
     ) -> Self {
         Self {
             source: source.into(),
             stage: stage.into(),
             retryable,
             message: message.into(),
-            raw_error: raw_error.into(),
         }
     }
 
     pub fn provider(stage: impl Into<String>, raw_error: impl Into<String>) -> Self {
         let raw_error = raw_error.into();
         let retryable = should_retry(&raw_error);
-        Self::new("provider", stage, retryable, raw_error.clone(), raw_error)
+        Self::new("provider", stage, retryable, raw_error)
     }
 
     pub fn core(stage: impl Into<String>, message: impl Into<String>) -> Self {
         let message = message.into();
-        Self::new("core", stage, false, message.clone(), message)
+        Self::new("core", stage, false, message)
     }
 
     pub fn validation(stage: impl Into<String>, message: impl Into<String>) -> Self {
         let message = message.into();
-        Self::new("core_validation", stage, false, message.clone(), message)
+        Self::new("core_validation", stage, false, message)
     }
 
     pub fn to_payload(&self) -> serde_json::Value {
@@ -211,8 +208,6 @@ impl RuntimeErrorReport {
             "source": self.source,
             "stage": self.stage,
             "retryable": self.retryable,
-            "message": self.message,
-            "raw_error": self.raw_error,
         })
     }
 }
@@ -332,7 +327,7 @@ impl AgentKernel {
         let mut restored = 0usize;
         for item in items {
             if let Some(registration) = item.registration {
-                self.tool_manager.restore(session_id, item.tool, registration);
+                self.tool_manager.restore(session_id, item.tool, registration)?;
                 restored += 1;
             }
         }
@@ -505,8 +500,8 @@ impl AgentKernel {
     }
 
     /// 注册工具
-    pub fn register_tool(&self, session_id: &str, tool: Tool, registration: ToolRegistration) {
-        self.tool_manager.register(session_id, tool, registration);
+    pub fn register_tool(&self, session_id: &str, tool: Tool, registration: ToolRegistration) -> Result<(), String> {
+        self.tool_manager.register(session_id, tool, registration)
     }
 
     /// 注销工具
@@ -739,7 +734,7 @@ impl AgentKernel {
                         Ok(Ok((resp, trace))) => (resp, trace),
                         Ok(Err(e)) => {
                             let report = RuntimeErrorReport::provider("model.stream", e);
-                            self.event_bus.emit(EventEnvelope::new(ERROR, &opts.session_id)
+                            self.event_bus.emit(EventEnvelope::new(RUN_FAILED, &opts.session_id)
                                 .with_run_id(&opts.run_id)
                                 .with_payload(report.to_payload()));
                             return Err(report);
@@ -832,7 +827,7 @@ impl AgentKernel {
                             ),
                         );
                         self.event_bus.emit(
-                            EventEnvelope::new(ERROR, &opts.session_id)
+                            EventEnvelope::new(RUN_FAILED, &opts.session_id)
                                 .with_run_id(&opts.run_id)
                                 .with_payload(report.to_payload()),
                         );

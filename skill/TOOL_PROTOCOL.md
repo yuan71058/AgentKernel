@@ -60,7 +60,7 @@ AgentKernel 通过 WebSocket Event 下发工具调用请求。
 | `trace_id` | string | 否 | 链路追踪 ID，预留 |
 | `payload.call_id` | string | 是 | 工具调用唯一 ID，结果回填时必须原样带回 |
 | `payload.tool_name` | string | 是 | 工具名称 |
-| `payload.input` | object | 是 | 工具输入参数，结构由 `tool.register.schema` 决定 |
+| `payload.input` | object | 是 | 工具输入参数，结构由注册时的原始 `tool.register.schema` 及 provider 编译结果共同约束 |
 | `payload.timeout_ms` | number | 否 | 超时时间；`0` 表示无限等待 |
 | `event_seq` | number | 否 | session 内事件序号，用于断线补拉 |
 
@@ -231,7 +231,7 @@ AgentKernel 消费 `tool.execute.result` 后，会发出工具结果事件，供
 
 ```text
 1. 业务端启动并连接 AgentKernel WS
-2. 业务端注册工具：tool.register
+2. 业务端注册工具：tool.register（Kernel 会在注册期校验 schema，并生成 `compiled_schemas.claude` / `compiled_schemas.openai`；不可适配则拒绝注册）
 3. 用户发送消息：session.send
 4. AgentKernel 下发：tool.call.request
 5. 业务端根据 tool_name 路由：

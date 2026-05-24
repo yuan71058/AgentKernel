@@ -75,7 +75,8 @@ impl ToolManager {
     }
 
     /// 注册工具
-    pub fn register(&self, session_id: &str, tool: Tool, registration: ToolRegistration) {
+    pub fn register(&self, session_id: &str, tool: Tool, registration: ToolRegistration) -> Result<(), String> {
+        let tool = tool.with_compiled_schemas()?;
         let scope = Self::scope_key(session_id);
         let name = tool.name.clone();
         info!(session_id = %session_id, tool_name = %name, client_id = %registration.client_id, "tool registered");
@@ -92,10 +93,12 @@ impl ToolManager {
             session_id,
             serde_json::json!({ "tool_name": name, "session_id": session_id })
         ));
+        Ok(())
     }
 
     /// 从持久化快照恢复工具，不触发运行时注册事件。
-    pub fn restore(&self, session_id: &str, tool: Tool, registration: ToolRegistration) {
+    pub fn restore(&self, session_id: &str, tool: Tool, registration: ToolRegistration) -> Result<(), String> {
+        let tool = tool.with_compiled_schemas()?;
         let scope = Self::scope_key(session_id);
         let name = tool.name.clone();
         info!(session_id = %session_id, tool_name = %name, client_id = %registration.client_id, "tool restored from snapshot");
@@ -107,6 +110,7 @@ impl ToolManager {
             .entry(scope)
             .or_default()
             .insert(name, registration);
+        Ok(())
     }
 
     /// 注销工具

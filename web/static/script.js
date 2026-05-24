@@ -532,7 +532,6 @@ createApp({
         loadTools();
         loadContextPreview();
         loadRuntimeSessions();
-        loadRuntimeSessions();
       };
       ws.onclose = () => {
         pendingCommandWaiters.forEach(waiter => {
@@ -785,13 +784,6 @@ createApp({
           if (msg.success && respCmd === 'session.send' && msg.payload?.run_id && isCurrentSession(respSessionId)) {
             currentRunId.value = msg.payload.run_id;
             currentRunStatus.value = msg.payload.status || currentRunStatus.value;
-          }
-          if (Array.isArray(msg.payload?.trace_details) && isCurrentSession(respSessionId)) {
-            latestTraceDetails.value = msg.payload.trace_details;
-            const latestTrace = msg.payload.trace_details[msg.payload.trace_details.length - 1];
-            if (latestTrace?.tool_chain_report) {
-              latestToolChainReport.value = latestTrace.tool_chain_report;
-            }
           }
           if (msg.success && msg.payload?.status === 'cancelled' && isCurrentSession(respSessionId)) {
             currentRunStatus.value = 'cancelled';
@@ -1066,13 +1058,20 @@ createApp({
       addLocalNotice('会话', `已切换并加载 session: ${id}`);
     }
 
-    function sendCommand(command, payload = {}, sid = sessionId.value) {
+    function sendCommand(command, payload = {}, sid = sessionId.value, options = {}) {
       if (!ws) return '';
       const rid = nextReqId();
       const msg = { command, request_id: rid, session_id: sid, payload };
       const out = JSON.stringify(msg);
       ws.send(out);
-      addRawMessage('out', out);
+      if (!options.silentRaw) addRawMessage('out', out);
+      if (options.silentRaw) {
+        pendingCommands.set(rid, {
+          command,
+          sessionId: sid || '',
+          silentRaw: true,
+        });
+      }
       return rid;
     }
 
@@ -1328,10 +1327,15 @@ createApp({
       addRawMessage('out', out);
     }
 
-    function loadRuntimeSessions() {
+    const lastRuntimeRefreshAt = { value: 0 };
+
+    function loadRuntimeSessions(options = {}) {
       if (!ws) return;
+      const nowTs = Date.now();
+      if (!options.force && nowTs - lastRuntimeRefreshAt.value < 800) return;
+      lastRuntimeRefreshAt.value = nowTs;
       runtimeLoading.value = true;
-      sendCommand('runtime.sessions', {}, '');
+      sendCommand('runtime.sessions', {}, '', { silentRaw: options.silentRaw !== false });
     }
 
     function loadSystemPrompt() {
@@ -1400,7 +1404,6 @@ createApp({
       addRawMessage('out', out);
       pendingImages.value = [];
       pendingAudio.value = [];
-      loadRuntimeSessions();
     }
 
     function insertChatMessage(role) {
@@ -1798,7 +1801,7 @@ createApp({
         return;
       }
       if (!belongsToCurrentSession) {
-        if (type === 'run.started' || type === 'run.completed' || type === 'run.cancelled' || type === 'error') {
+        if (type === 'run.started' || type === 'run.completed' || type === 'run.cancelled' || type === 'run.failed') {
           loadRuntimeSessions();
         }
         return;
@@ -1810,7 +1813,6 @@ createApp({
         }
         currentRunStatus.value = 'running';
         streamingThinking.value = '';
-        loadRuntimeSessions();
         return;
       }
       if (type === 'tool_chain.diagnosed') {
@@ -1875,13 +1877,14 @@ createApp({
         scrollToChat();
         return;
       }
-      if (type === 'error') {
+      if (type === 'run.failed') {
         if (!belongsToTrackedRun) {
           loadRuntimeSessions();
           return;
         }
         currentRunStatus.value = 'failed';
         loadRuntimeSessions();
+        return;
       }
       // tool.registered → 更新工具列表
       if (type === 'tool.registered') {
@@ -1894,13 +1897,13 @@ createApp({
     function eventLabel(type) {
       const map = {
         'model.delta': '模型流式增量',
-        'model.completed': '模型完成',
-        'tool_chain.diagnosed': '工具链诊断',
+        'model.completed': '模型文本已收完',
+        'tool_chain.diagnosed': '上下文工具链检查',
         'session.created': '会话创建',
         'session.closed': '会话关闭',
-        'run.started': '推理开始',
-        'run.cancelled': '推理中断',
-        'run.completed': '推理完成',
+        'run.started': '推理任务开始',
+        'run.cancelled': '推理任务中断',
+        'run.completed': '推理任务结束',
         'tool.call.request': '工具执行请求',
         'tool.call.result': 'Core 已确认工具结果',
         'tool.call.error': '工具调用失败',
@@ -1913,7 +1916,7 @@ createApp({
         'context.seed.deleted': 'Seed 已删除',
         'context.seed.cleared': 'Seed 已清空',
         'prompt.attached': 'Prompt 附加',
-        'error': '错误',
+        'run.failed': '推理任务失败',
         'stream': '流数据',
       };
       return map[type] || type;
@@ -1925,7 +1928,7 @@ createApp({
       const tag = (v, cls) => `<span class="raw-tag${cls ? ' '+cls : ''}">${String(v ?? '')}</span>`;
       switch(type) {
         case 'model.delta': return `${p.event_type === 'thinking' ? '思维' : '文本'}增量 ${tag(JSON.stringify(p.delta || '').slice(0, 48))}`;
-        case 'model.completed': return `内容 ${tag(text(p.content, 80))}`;
+        case 'model.completed': return `AI 最终文本 ${tag(text(p.content, 80))}`;
         case 'tool_chain.diagnosed':
           return `${tag(toolChainStatusText(p.report))} 完整 ${tag((p.report?.complete_tool_call_ids || []).length)} 丢弃 ${tag(toolChainIssueCount(p.report))}`;
         case 'tool.call.request': return `${tag(p.tool_name)} 输入 ${tag(JSON.stringify(p.input || {}).slice(0, 64))}`;
@@ -1934,10 +1937,10 @@ createApp({
         case 'tool.registered': return `${tag(p.tool_name)} 客户端 ${tag(p.client_id || '—')}`;
         case 'session.created': return `标题 ${tag(p.title || (p.auto_created ? '自动创建' : '—'))}`;
         case 'session.closed': return p.reason ? `原因 ${tag(p.reason)}` : '会话关闭';
-        case 'run.started': return `供应商 ${tag(p.provider || '—')} 模型 ${tag(p.model || '—')}`;
+        case 'run.started': return `任务已进入运行队列：供应商 ${tag(p.provider || '—')} 模型 ${tag(p.model || '—')}`;
         case 'run.cancelled': return `${p.preserved ? tag('已保留部分输出') : tag('未保留输出')} 耗时 ${tag(p.duration_ms ? p.duration_ms + 'ms' : '—')}`;
-        case 'run.completed': return `Token ${tag(p.total_tokens || '—')} 耗时 ${tag(p.duration_ms ? p.duration_ms + 'ms' : '—')}`;
-        case 'error': return tag(JSON.stringify(p).slice(0, 90), 'err');
+        case 'run.completed': return `本轮任务结束：Token ${tag(p.total_tokens || '—')} 耗时 ${tag(p.duration_ms ? p.duration_ms + 'ms' : '—')}`;
+        case 'run.failed': return tag(JSON.stringify(p).slice(0, 90), 'err');
         case 'context.threshold.reached': return `使用率 ${tag((p.usage_percent ?? '—') + '%')} Token ${tag(p.estimated_tokens || '—')}`;
         case 'context.updated': return `动作 ${tag(contextCommandName(p.action || 'context.updated'))} Mode ${tag(contextModeLabel(p.context?.mode || '—'))}`;
         case 'context.reset': return `Mode ${tag(p.context?.mode || 'full')}`;
@@ -1952,7 +1955,7 @@ createApp({
     }
 
     function eventCategory(type) {
-      if (type === 'error') return 'error';
+      if (type === 'run.failed') return 'error';
       if (type.startsWith('model.')) return 'model';
       if (type.startsWith('run.')) return 'run';
       if (type.startsWith('tool_chain.')) return 'tool';
@@ -2032,6 +2035,9 @@ createApp({
       if (dir === 'in') {
         // Response
         if (msg.type === 'response') {
+          if (getPendingMeta(msg.request_id).silentRaw) {
+            return { label: '', brief: '', hidden: true };
+          }
           if (msg.request_id === 'hello') {
             return { label: '连接确认', brief: `连接ID ${tag((msg.payload?.connection_id||'').slice(0,8))}` };
           }
@@ -2043,7 +2049,7 @@ createApp({
           const cmdLabels = {
             'provider.update': '更新供应商响应',
             'provider.get': '获取供应商响应',
-            'session.send': '发送消息响应',
+            'session.send': '发送消息命令完成',
             'session.messages': '消息历史响应',
             'session.get': '获取会话响应',
             'session.info': '会话详情响应',
@@ -2071,12 +2077,12 @@ createApp({
             'run.cancel': '取消推理响应',
           };
           let respLabel = cmdLabels[cmd] || '命令响应';
-          if (cmd === 'session.send') {
-            if (!msg.success) respLabel = '推理失败';
-            else if (p.status === 'cancelled') respLabel = '推理中断';
-            else if (p.status === 'completed') respLabel = '推理完成';
-            else respLabel = '发送消息响应';
-          }
+            if (cmd === 'session.send') {
+              if (!msg.success) respLabel = 'AI 推理失败';
+              else if (p.status === 'cancelled') respLabel = 'AI 推理已中断';
+              else if (p.status === 'completed') respLabel = 'AI 推理已结束';
+              else respLabel = '发送消息命令完成';
+            }
           let brief = `${tag(msg.request_id)} ${tag(status, cls)}`;
           // 按命令类型提取关键信息
           if (p.provider) {
@@ -2088,13 +2094,8 @@ createApp({
           if (p.messages) brief += ` 加载 ${p.messages.length} 条历史`;
           if (cmd === 'session.send') {
             if (p.run_id) brief += ` run ${tag((p.run_id || '').slice(0, 16))}`;
-            if (p.status) brief += ` ${tag(p.status, p.status === 'cancelled' ? 'err' : '')}`;
-            if (Array.isArray(p.trace_details) && p.trace_details.length) {
-              const lastTrace = p.trace_details[p.trace_details.length - 1];
-              const report = lastTrace?.tool_chain_report;
-              brief += ` trace ${tag(p.trace_details.length)}`;
-              if (report) brief += ` ${tag(toolChainStatusText(report), toolChainIssueCount(report) > 0 ? 'err' : '')}`;
-            }
+            if (p.status) brief += ` 状态 ${tag(p.status, p.status === 'cancelled' ? 'err' : '')}`;
+            if (typeof p.traces === 'number') brief += ` 模型调用 ${tag(p.traces)} 次`;
           }
           if (cmd === 'runtime.sessions') brief += ` session ${tag(p.running_session_count ?? 0)} run ${tag(p.running_run_count ?? 0)}`;
           if (p.active_context) {
@@ -2119,13 +2120,13 @@ createApp({
           const p = msg.payload || {};
           const map = {
             'model.delta':              () => ({ label: p.event_type === 'thinking' ? '模型思维（流式）' : '模型输出（流式）', brief: `${p.event_type === 'thinking' ? '思维' : '文本'}增量 ${tag(JSON.stringify(p.delta||'').slice(0,40))}` }),
-            'model.completed':          () => ({ label: '模型完成', brief: `${tag((p.content||'').slice(0,60))}` }),
-            'tool_chain.diagnosed':     () => ({ label: '工具链诊断', brief: `${tag(toolChainStatusText(p.report), toolChainIssueCount(p.report) > 0 ? 'err' : '')} 完整 ${tag((p.report?.complete_tool_call_ids||[]).length)} 丢弃 ${tag(toolChainIssueCount(p.report))}` }),
+            'model.completed':          () => ({ label: 'AI 文本已收完', brief: `最终回答 ${tag((p.content||'').slice(0,60))}` }),
+            'tool_chain.diagnosed':     () => ({ label: '上下文工具链检查', brief: `${tag(toolChainStatusText(p.report), toolChainIssueCount(p.report) > 0 ? 'err' : '')} 完整闭环 ${tag((p.report?.complete_tool_call_ids||[]).length)} 个，丢弃 ${tag(toolChainIssueCount(p.report))} 个` }),
             'session.created':          () => ({ label: '会话创建', brief: `标题 ${tag(p.title||'—')}` }),
             'session.closed':           () => ({ label: '会话关闭', brief: p.reason ? `原因 ${tag(p.reason)}` : '' }),
-            'run.started':              () => ({ label: '推理开始', brief: `${tag(p.provider)} ${tag(p.model)}` }),
-            'run.cancelled':            () => ({ label: '推理中断', brief: `${p.preserved ? tag('已保留部分输出') : tag('未保留输出')} ${tag(p.duration_ms ? p.duration_ms + 'ms' : '—')}` }),
-            'run.completed':            () => ({ label: '推理完成', brief: `耗时 ${tag(p.duration_ms?p.duration_ms+'ms':'—')}` }),
+            'run.started':              () => ({ label: '推理任务开始', brief: `使用 ${tag(p.provider)} / ${tag(p.model)}` }),
+            'run.cancelled':            () => ({ label: '推理任务中断', brief: `${p.preserved ? tag('已保留部分输出') : tag('未保留输出')} ${tag(p.duration_ms ? p.duration_ms + 'ms' : '—')}` }),
+            'run.completed':            () => ({ label: '推理任务结束', brief: `本轮耗时 ${tag(p.duration_ms?p.duration_ms+'ms':'—')}` }),
             'tool.call.request':        () => ({ label: '工具执行请求', brief: `${tag(p.tool_name)} 输入 ${JSON.stringify(p.input||{}).slice(0,50)}` }),
             'tool.call.result':         () => ({ label: 'Core 已确认工具结果', brief: `${tag(p.tool_name)} 结果 ${(p.result||'').slice(0,40)} ${p.is_error?tag('错误','err'):tag('已接收')}` }),
             'tool.call.error':          () => ({ label: '工具调用失败', brief: `${tag(p.tool_name)} ${tag((p.error||'').slice(0,40),'err')}` }),
@@ -2138,7 +2139,7 @@ createApp({
             'context.seed.deleted':     () => ({ label: 'Seed 已删除', brief: `${tag((p.seed_id||'').slice(0,16))}` }),
             'context.seed.cleared':     () => ({ label: 'Seed 已清空', brief: `${tag(p.kind || '全部')} 删除 ${tag(p.removed_count || 0)} 条` }),
             'prompt.attached':          () => ({ label: 'Prompt 附加', brief: `${tag(p.prompt_name||p.name||'')}` }),
-            'error':                    () => ({ label: '错误', brief: tag(JSON.stringify(p).slice(0,60), 'err') }),
+            'run.failed':               () => ({ label: '推理任务失败', brief: tag(JSON.stringify(p).slice(0,60), 'err') }),
           };
           const factory = map[et];
           if (factory) return factory();
@@ -2187,7 +2188,8 @@ createApp({
     }
 
     function addRawMessage(dir, data) {
-      const { label, brief } = summarizeRaw(dir, data);
+      const { label, brief, hidden } = summarizeRaw(dir, data);
+      if (hidden) return;
 
       // 记录发出的命令类型（用于响应中文标签）
       if (dir === 'out') {

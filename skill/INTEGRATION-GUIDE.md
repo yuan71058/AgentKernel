@@ -91,7 +91,7 @@ session.send              ← 发送用户消息
 | 流式输出 | `model.delta` × N | 逐字拼接到聊天区（`payload.delta`） |
 | 思维过程 | `model.delta`（`payload.event_type="thinking"`）| 可选展示到"思考"区域 |
 | 模型完成 | `model.completed` | `payload.content` 是完整文本，可用于兜底 |
-| 运行结束 | `run.completed` | 显示耗时、token 统计 |
+| 推理失败 | `run.failed` | UI 标记失败，按 `session_id/run_id` 归属到对应会话 |
 | 最终响应 | `session.send` Response | `payload.content` 是最终文本 |
 
 > **兜底逻辑**: 如果 `model.completed` 到了但聊天区还没内容，用它的 `payload.content` 兜底显示。

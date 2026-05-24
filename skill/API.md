@@ -1,7 +1,7 @@
 # AgentKernel WebSocket API 文档
 
-> **版本**: v1.1.0  
-> **最后更新**: 2026-05-22  
+> **版本**: v1.1.1  
+> **最后更新**: 2026-05-24  
 > **状态**: 基于代码分析 + 实际数据包抓取验证
 
 ---
@@ -273,10 +273,9 @@ async def connect():
 
 **成功响应**（已验证）:
 
+> 注意：`session.send` 最终响应只返回轻量统计，不再内联返回完整 `trace_details`。详细 Trace 应通过事件、日志或后续专门 trace 查询能力获取，避免把 request/response body 反复塞进 WebSocket 响应。
+
 ```json
-{
-  "type": "response",
-  "request_id": "r1",
   "success": true,
   "payload": {
     "session_id": "my_session",
@@ -285,7 +284,6 @@ async def connect():
     "content": "我是DeepSeek，一个由深度求索公司创造的免费AI助手！",
     "usage": { "input_tokens": 123, "output_tokens": 45 },
     "traces": 1,
-    "trace_details": [...],
     "tool_calls_made": 0
   }
 }
@@ -609,13 +607,27 @@ async def connect():
 |--------------|------|------|------|
 | `tool_name` | string | **是** | 工具名称 |
 | `description` | string | 否 | 工具功能描述 |
-| `schema` | object | 否 | JSON Schema 定义输入参数 |
+| `schema` | object | 否 | JSON Schema 定义输入参数；注册时会编译为 provider-specific schema，无法适配会拒绝注册 |
 | `client_id` | string | 否 | 注册来源标识 |
 | `permissions` | string[] | 否 | 权限标签 |
 | `timeout_ms` | u64 | 否 | 超时毫秒数；`0` 表示无限等待 |
 | `tags` | string[] | 否 | 分类标签 |
 
-> **Claude 协议限制**: 工具名必须匹配 `^[a-zA-Z0-9_-]+$`，不能包含 `.` 等特殊字符。
+> **Claude 协议限制**: 工具名必须匹配 `^[a-zA-Z0-9_-]+$`，不能包含 `.` 等特殊字符。Claude 的 `input_schema` 顶层必须可编译为 `type: "object"`，且不能向 Claude 透传顶层 `oneOf` / `anyOf` / `allOf` / `enum` / `not`。
+>
+> **注册期 schema 检测**: Kernel 会在 `tool.register` 阶段把原始 `schema` 编译为 `compiled_schemas.claude` / `compiled_schemas.openai`。可转换的顶层 `oneOf` / `anyOf` / `allOf` 会合并为 Claude 可接受的 object schema；无法适配的 schema 会直接返回失败响应，不会注册进 session。编译后的 object schema 会统一补齐 `properties` 和 `required: []`，避免 OpenAI 兼容接口因 `required: null` / 缺失数组而拒绝。
+>
+> **失败响应示例**:
+> ```json
+> {
+>   "type": "response",
+>   "request_id": "r6",
+>   "success": false,
+>   "payload": {
+>     "error": "invalid tool schema for 'bad_tool': Claude tool input_schema top-level must be object and cannot be adapted from this schema"
+>   }
+> }
+> ```
 
 **成功响应**（已验证）:
 
@@ -696,6 +708,18 @@ async def connect():
           "properties": { "a": { "type": "number" }, "b": { "type": "number" } },
           "required": ["a", "b"]
         },
+        "compiled_schemas": {
+          "claude": {
+            "type": "object",
+            "properties": { "a": { "type": "number" }, "b": { "type": "number" } },
+            "required": ["a", "b"]
+          },
+          "openai": {
+            "type": "object",
+            "properties": { "a": { "type": "number" }, "b": { "type": "number" } },
+            "required": ["a", "b"]
+          }
+        },
         "client_id": "unknown",
         "timeout_ms": 0,
         "tags": []
@@ -714,7 +738,11 @@ async def connect():
         "tool": {
           "name": "calc_add",
           "description": "加法计算",
-          "input_schema": {}
+          "input_schema": {},
+          "compiled_schemas": {
+            "claude": { "type": "object", "properties": {}, "additionalProperties": true },
+            "openai": { "type": "object", "properties": {}, "additionalProperties": true }
+          }
         }
       }
     ]
@@ -758,7 +786,11 @@ async def connect():
     "tool": {
       "name": "calc_add",
       "description": "加法计算",
-      "input_schema": { "type": "object", "properties": {}, "required": [] }
+      "input_schema": { "type": "object", "properties": {}, "required": [] },
+      "compiled_schemas": {
+        "claude": { "type": "object", "properties": {}, "required": [] },
+        "openai": { "type": "object", "properties": {}, "required": [] }
+      }
     }
   }
 }
@@ -1219,10 +1251,9 @@ async def connect():
 
 **成功响应**:
 
+> 前端调试台会把该命令当作静默状态查询处理：用于刷新“运行中会话/Run”面板，不建议每次都展示在原始消息流里；正常聊天过程已有 `run.started` / `run.completed` / `run.failed` 事件表达状态变化。
+
 ```json
-{
-  "type": "response",
-  "request_id": "r18",
   "success": true,
   "payload": {
     "running_session_count": 2,
@@ -1593,7 +1624,7 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
 | `tool.call.request` | 请求业务端/能力执行器执行工具 | - |
 | `tool.call.result` | 工具执行结果已回填 | - |
 | `tool.registered` | 工具注册完成 | - |
-| `error` | 运行期错误 | ✅ |
+| `run.failed` | 推理失败（模型/供应商/运行时错误） | ✅ |
 | `session.created` | Session 创建 | - |
 | `session.closed` | Session 关闭 | - |
 | `context.threshold.reached` | 上下文 token 达阈值 | - |
@@ -1711,12 +1742,14 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
 - `is_error = true` 表示执行失败
 - 该事件用于事件流、trace、debug、replay，不是再次要求业务端执行
 
-#### `error` — 运行期错误
+#### `run.failed` — 推理失败
 
 ```json
 {
   "type": "event",
-  "event_type": "error",
+  "event_type": "run.failed",
+  "session_id": "my_session",
+  "run_id": "run_xxx",
   "payload": {
     "error": "claude API error (400): {...}",
     "source": "provider",
@@ -1725,6 +1758,10 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
   }
 }
 ```
+
+- `run.failed` 只表示某次对话推理失败，必须带 `session_id` 和 `run_id`。
+- 业务端用于判断推理失败时，应优先监听 `run.failed`，不要依赖泛化的 `error` 类型。
+- `session.send` 的失败 Response 用于结束命令等待；`run.failed` 用于事件流/UI 状态更新。两者可能描述同一次失败，但职责不同。
 
 ---
 
@@ -1742,7 +1779,7 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
    - run.started → 开始
    - model.delta × N → 流式文本
    - model.completed → 完整文本
-   - run.completed → 统计
+   - run.failed → 推理失败（带 session_id/run_id/error）
 7. 收到 session.send Response → 本轮结束
 ```
 

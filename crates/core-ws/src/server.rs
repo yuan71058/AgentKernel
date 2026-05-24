@@ -583,7 +583,6 @@ async fn handle_send_message(
                     "output_tokens": resp.usage.output_tokens,
                 },
                 "traces": resp.traces.len(),
-                "trace_details": resp.traces,
                 "tool_calls_made": resp.tool_calls_made,
             })).await;
         }
@@ -706,6 +705,7 @@ async fn handle_tool_list(
             "name": t.name,
             "description": t.description,
             "input_schema": t.input_schema,
+            "compiled_schemas": t.compiled_schemas,
             "client_id": reg.as_ref().map(|r| r.client_id.as_str()).unwrap_or(""),
             "timeout_ms": reg.as_ref().map(|r| r.timeout_ms),
             "tags": reg.as_ref().map(|r| &r.tags).unwrap_or(&empty_tags),
@@ -748,6 +748,7 @@ async fn handle_register_tool(
         name: name.to_string(),
         description: desc.to_string(),
         input_schema: schema.clone(),
+        compiled_schemas: std::collections::HashMap::new(),
     };
     let reg = ToolRegistration {
         tool_name: name.to_string(),
@@ -757,6 +758,14 @@ async fn handle_register_tool(
         timeout_ms: timeout,
         tags,
     };
+    let tool = match tool.with_compiled_schemas() {
+        Ok(tool) => tool,
+        Err(e) => {
+            send_err(tx, request_id, &format!("invalid tool schema for '{}': {}", name, e)).await;
+            return;
+        }
+    };
+
     if !session_id.is_empty() {
         if let Err(e) = upsert_session_tool_snapshot(scaffold, session_id, &tool, &reg).await {
             send_err(tx, request_id, &e).await;
@@ -764,7 +773,10 @@ async fn handle_register_tool(
         }
     }
 
-    scaffold.register_tool(session_id, tool.clone(), reg.clone());
+    if let Err(e) = scaffold.register_tool(session_id, tool.clone(), reg.clone()) {
+        send_err(tx, request_id, &format!("invalid tool schema for '{}': {}", name, e)).await;
+        return;
+    }
 
     scaffold.event_bus.emit(EventEnvelope::new(TOOL_REGISTERED, session_id)
         .with_payload(json!({"tool_name": name, "client_id": client_id, "session_id": session_id})));

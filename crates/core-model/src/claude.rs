@@ -323,7 +323,7 @@ fn serialize_tools(tools: &[Tool]) -> Vec<serde_json::Value> {
         serde_json::json!({
             "name": t.name,
             "description": t.description,
-            "input_schema": t.input_schema,
+            "input_schema": t.schema_for_protocol(&Protocol::Claude),
         })
     }).collect()
 }

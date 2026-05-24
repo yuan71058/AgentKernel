@@ -405,14 +405,22 @@
                   <label>最近保留消息数</label>
                   <input class="config-input" v-model.number="contextKeepRecent" type="number" placeholder="20">
                 </div>
+              </div>
+              <div class="config-actions" style="margin-top:8px">
+                <button class="btn" @click="keepRecentContext" :disabled="!connected">应用最近N条</button>
+              </div>
+              <div class="config-hint">只限制模型最多看到最近 N 条消息；不需要填写消息 ID。</div>
+
+              <div class="config-row-group" style="margin-top:16px">
                 <div class="config-row">
                   <label>从某条消息后开始</label>
                   <input class="config-input" v-model="contextIncludeAfter" placeholder="msg_xxx">
                 </div>
               </div>
               <div class="config-actions" style="margin-top:8px">
-                <button class="btn" @click="includeAfterContext" :disabled="!connected || !contextIncludeAfter.trim()">应用起点</button>
+                <button class="btn" @click="includeAfterContext" :disabled="!connected || !contextIncludeAfter.trim()">应用消息起点</button>
               </div>
+              <div class="config-hint">只设置消息裁剪起点：模型只看该消息之后的历史。</div>
               <div class="stats-panel" style="margin-top:16px" v-if="contextPreview.active_context">
                 <div class="stat-row"><span class="stat-label">上下文 ID</span><span class="stat-value" style="font-size:11px">{{ contextPreview.active_context.context_id }}</span></div>
                 <div class="stat-row"><span class="stat-label">上下文模式</span><span class="stat-value">{{ contextModeLabel(contextPreview.active_context.mode) }}</span></div>

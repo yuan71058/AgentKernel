@@ -259,7 +259,7 @@ fn serialize_tools(tools: &[Tool]) -> Vec<serde_json::Value> {
             "function": {
                 "name": t.name,
                 "description": t.description,
-                "parameters": t.input_schema,
+                "parameters": t.schema_for_protocol(&Protocol::OpenAI),
             }
         })
     }).collect()

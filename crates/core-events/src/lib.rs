@@ -26,7 +26,7 @@ pub mod event_types {
     pub const TOOL_REGISTERED: &str = "tool.registered";
     pub const CONTEXT_THRESHOLD_REACHED: &str = "context.threshold.reached";
     pub const PROMPT_ATTACHED: &str = "prompt.attached";
-    pub const ERROR: &str = "error";
+    pub const RUN_FAILED: &str = "run.failed";
 }
 
 // ═══════════════════════════════════════════════════════════════
