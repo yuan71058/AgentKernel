@@ -173,6 +173,10 @@ textarea.config-input { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco
 .raw-card.new { animation: flash-white 1s ease-out; }
 @keyframes flash-white { 0% { background: #e0f2fe; } 100% { background: var(--bg); } }
 .raw-card-header { display: flex; align-items: center; gap: 10px; padding: 10px 12px; }
+.raw-message-id-row { display: flex; align-items: center; gap: 8px; padding: 0 12px 10px 12px; border-top: 1px dashed var(--border); margin-top: -2px; }
+.raw-message-id-label { color: var(--text3); font-size: 11px; flex-shrink: 0; }
+.raw-message-id-text { color: var(--text2); font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; word-break: break-all; flex: 1; user-select: text; }
+.seed-content-box { padding: 0 12px 12px 12px; color: var(--text2); font-size: 12px; white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
 .event-time { color: var(--text3); font-size: 11px; white-space: nowrap; min-width: 60px; font-family: ui-monospace, monospace; }
 .event-type { font-weight: 600; font-size: 12px; padding: 2px 8px; border-radius: 12px; background: var(--bg2); border: 1px solid var(--border); white-space: nowrap; }
 .raw-dir { font-size: 12px; font-weight: 700; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--bg2); flex-shrink: 0; }

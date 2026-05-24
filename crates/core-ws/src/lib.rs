@@ -73,7 +73,9 @@ pub mod commands {
     pub const CONTEXT_INCLUDE_AFTER: &str = "context.include_after";
     pub const CONTEXT_KEEP_RECENT: &str = "context.keep_recent";
     pub const CONTEXT_SEED_ADD: &str = "context.seed.add";
-    pub const COMPACTION_APPLY: &str = "context.compaction.apply";
+    pub const CONTEXT_SEED_DELETE: &str = "context.seed.delete";
+    pub const CONTEXT_SEED_CLEAR: &str = "context.seed.clear";
+    pub const CONTEXT_SEED_SET: &str = "context.seed.set";
 
     // ─── Events（断线补拉 + 订阅）──────────
     pub const EVENTS_PULL: &str = "events.pull";

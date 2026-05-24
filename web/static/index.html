@@ -425,35 +425,36 @@
             </div>
 
             <div class="config-section">
-              <div class="config-title">手动注入上下文块</div>
-              <div class="config-row">
-                <label>类型</label>
-                <select v-model="contextSeedKind" class="config-input">
-                  <option value="system_memory">系统记忆</option>
-                  <option value="compaction_summary">压缩摘要</option>
-                  <option value="user_preference">用户偏好</option>
-                  <option value="world_state">世界状态</option>
-                  <option value="agent_state">Agent 状态</option>
-                </select>
+              <div class="config-title">Seed 管理 <span>动态前置上下文块，独立于消息历史</span></div>
+              <div class="config-row-group">
+                <div class="config-row">
+                  <label>类型</label>
+                  <select v-model="contextSeedKind" class="config-input">
+                    <option value="system_memory">系统记忆</option>
+                    <option value="compaction_summary">压缩摘要</option>
+                    <option value="user_preference">用户偏好</option>
+                    <option value="world_state">世界状态</option>
+                    <option value="agent_state">Agent 状态</option>
+                  </select>
+                </div>
+                <div class="config-row">
+                  <label>写入模式</label>
+                  <select v-model="contextSeedMode" class="config-input">
+                    <option value="add">新增一条</option>
+                    <option value="set">按类型覆盖</option>
+                  </select>
+                </div>
               </div>
               <div class="config-row">
                 <label>内容</label>
-                <textarea class="config-input" v-model="contextSeedContent" style="min-height:90px;resize:vertical" placeholder="这段内容会作为 Context Seed 注入模型输入..."></textarea>
+                <textarea class="config-input" v-model="contextSeedContent" style="min-height:110px;resize:vertical" placeholder="例如压缩摘要、用户偏好、世界状态等。Seed 会作为动态前置上下文注入模型输入..."></textarea>
               </div>
               <div class="config-actions">
-                <button class="btn btn-connect" @click="addContextSeed" :disabled="!connected || !contextSeedContent.trim()">注入 Seed</button>
+                <button class="btn btn-connect" @click="saveContextSeed" :disabled="!connected || !contextSeedContent.trim()">{{ contextSeedMode === 'set' ? '覆盖写入 Seed' : '新增 Seed' }}</button>
+                <button class="btn" @click="clearContextSeedsByKind" :disabled="!connected">清空该类型</button>
+                <button class="btn" @click="clearAllContextSeeds" :disabled="!connected">清空全部 Seed</button>
               </div>
-            </div>
-
-            <div class="config-section">
-              <div class="config-title">应用压缩摘要</div>
-              <div class="config-row">
-                <label>摘要内容</label>
-                <textarea class="config-input" v-model="contextSummary" style="min-height:110px;resize:vertical" placeholder="把压缩后的上下文摘要写在这里，应用后会作为压缩摘要注入模型输入..."></textarea>
-              </div>
-              <div class="config-actions">
-                <button class="btn btn-connect" @click="applyCompaction" :disabled="!connected || !contextSummary.trim()">应用压缩摘要</button>
-              </div>
+              <div class="config-hint">如果要实现“压缩历史”，先用 Seed 保存摘要，再单独用“从某条消息后开始”设置消息裁剪起点。</div>
             </div>
 
             <div class="config-section">
@@ -465,8 +466,13 @@
                 <div class="raw-card" style="cursor:default">
                   <div class="raw-card-header">
                     <span class="raw-label" :style="{color: roleColor(m.role)}">{{ m.role }}</span>
-                    <span class="raw-brief"><span class="raw-tag">{{ (m.message_id||'').slice(0,8) }}</span> {{ contextMessageText(m).slice(0,90) }}</span>
+                    <span class="raw-brief">{{ contextMessageText(m).slice(0,90) }}</span>
                     <button class="btn" @click.stop="excludeSingleMessage(m.message_id)" :disabled="!connected" style="padding:4px 10px;font-size:11px;margin-left:auto">排除</button>
+                  </div>
+                  <div class="raw-message-id-row">
+                    <span class="raw-message-id-label">消息ID</span>
+                    <span class="raw-message-id-text" :title="m.message_id">{{ m.message_id }}</span>
+                    <button class="btn" @click.stop="copyMessageId(m.message_id)" :disabled="!m.message_id" style="padding:4px 10px;font-size:11px;flex-shrink:0">复制</button>
                   </div>
                 </div>
               </template>
@@ -485,9 +491,32 @@
               <div class="config-actions">
                 <button class="btn btn-connect" @click="saveSystemPrompt" :disabled="!connected">保存到 Session</button>
                 <button class="btn" @click="loadSystemPrompt" :disabled="!connected">读取当前</button>
+                <button class="btn" @click="loadContextPreview" :disabled="!connected">刷新 Seed</button>
                 <button class="btn" @click="loadTools" :disabled="!connected">刷新工具列表</button>
               </div>
               <div class="config-hint" v-if="systemPromptStatus">{{ systemPromptStatus }}</div>
+            </div>
+
+            <div class="config-section">
+              <div class="config-title">已注入 Seed <span>手动注入 / 压缩摘要等会进入模型上下文的块</span></div>
+              <template v-if="!contextPreview.seeds || contextPreview.seeds.length===0">
+                <div style="color:var(--text3);font-size:12px;padding:12px 0;text-align:center">暂无已注入 Seed，点击“刷新 Seed”读取</div>
+              </template>
+              <template v-for="seed in contextPreview.seeds || []" :key="seed.seed_id">
+                <div class="raw-card" style="cursor:default">
+                  <div class="raw-card-header">
+                    <span class="raw-label">{{ seedKindLabel(seed.kind) }}</span>
+                    <span class="raw-brief">{{ (seed.content || '').slice(0,120) }}</span>
+                    <span class="raw-tag" :class="{err: !seed.enabled}">{{ seed.enabled ? '启用' : '禁用' }}</span>
+                    <button class="btn" @click.stop="deleteContextSeed(seed.seed_id)" :disabled="!connected" style="padding:4px 10px;font-size:11px;margin-left:auto">删除</button>
+                  </div>
+                  <div class="raw-message-id-row">
+                    <span class="raw-message-id-label">SeedID</span>
+                    <span class="raw-message-id-text" :title="seed.seed_id">{{ seed.seed_id }}</span>
+                  </div>
+                  <div class="seed-content-box">{{ seed.content }}</div>
+                </div>
+              </template>
             </div>
           </div>
         </template>

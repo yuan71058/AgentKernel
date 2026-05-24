@@ -206,7 +206,10 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
                 commands::LIST_SESSIONS,
                 commands::SYSTEM_STATS,
                 commands::CONTEXT_PREVIEW,
-                commands::COMPACTION_APPLY,
+                commands::CONTEXT_SEED_ADD,
+                commands::CONTEXT_SEED_DELETE,
+                commands::CONTEXT_SEED_CLEAR,
+                commands::CONTEXT_SEED_SET,
                 commands::SYSTEM_PROMPT_GET,
                 commands::SYSTEM_PROMPT_SET,
                 commands::TOOL_LIST,
@@ -391,8 +394,14 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
             commands::CONTEXT_SEED_ADD => {
                 handle_context_seed_add(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
             }
-            commands::COMPACTION_APPLY => {
-                handle_compaction_apply(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
+            commands::CONTEXT_SEED_DELETE => {
+                handle_context_seed_delete(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
+            }
+            commands::CONTEXT_SEED_CLEAR => {
+                handle_context_seed_clear(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
+            }
+            commands::CONTEXT_SEED_SET => {
+                handle_context_seed_set(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
             }
             commands::EVENTS_PULL => {
                 handle_events_pull(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
@@ -1171,6 +1180,21 @@ async fn persist_context_state(scaffold: &AgentKernel, ctx: &ContextState) -> Re
     scaffold.storage.save_context_state(ctx).await
 }
 
+async fn persist_all_seeds(scaffold: &AgentKernel, session_id: &str) -> Result<(), String> {
+    let seeds = scaffold.context_mgr.get_seeds(session_id);
+    scaffold.storage.save_seeds(session_id, &seeds).await
+}
+
+fn parse_seed_kind(kind: &str) -> SeedKind {
+    match kind {
+        "compaction_summary" => SeedKind::CompactionSummary,
+        "user_preference" => SeedKind::UserPreference,
+        "world_state" => SeedKind::WorldState,
+        "agent_state" => SeedKind::AgentState,
+        _ => SeedKind::SystemMemory,
+    }
+}
+
 async fn emit_context_event(scaffold: &AgentKernel, session_id: &str, event_type: &str, payload: serde_json::Value) {
     scaffold.event_bus.emit(EventEnvelope::new(event_type, session_id).with_payload(payload));
 }
@@ -1286,13 +1310,7 @@ async fn handle_context_seed_add(
         send_err(tx, request_id, "content is required").await;
         return;
     }
-    let kind = match payload["kind"].as_str().unwrap_or("system_memory") {
-        "compaction_summary" => SeedKind::CompactionSummary,
-        "user_preference" => SeedKind::UserPreference,
-        "world_state" => SeedKind::WorldState,
-        "agent_state" => SeedKind::AgentState,
-        _ => SeedKind::SystemMemory,
-    };
+    let kind = parse_seed_kind(payload["kind"].as_str().unwrap_or("system_memory"));
     let seed = ContextSeed {
         seed_id: format!("seed_{}", uuid::Uuid::new_v4()),
         session_id: session_id.to_string(),
@@ -1311,7 +1329,7 @@ async fn handle_context_seed_add(
     send_ok(tx, request_id, json!({"session_id": session_id, "seed": seed})).await;
 }
 
-async fn handle_compaction_apply(
+async fn handle_context_seed_delete(
     scaffold: &AgentKernel,
     tx: &mpsc::Sender<WsMessage>,
     session_id: &str,
@@ -1322,27 +1340,86 @@ async fn handle_compaction_apply(
         send_err(tx, request_id, "session_id is required").await;
         return;
     }
-    let summary = payload["summary"].as_str().unwrap_or("").to_string();
-    if summary.trim().is_empty() {
-        send_err(tx, request_id, "summary is required").await;
+    let seed_id = payload["seed_id"].as_str().unwrap_or("").trim().to_string();
+    if seed_id.is_empty() {
+        send_err(tx, request_id, "seed_id is required").await;
         return;
     }
-    let include_after = payload["include_after_message_id"].as_str().map(String::from);
     scaffold.session_mgr.get_or_create(session_id).await.ok();
-    let (ctx, seed) = scaffold.context_mgr.apply_compaction(session_id, summary, include_after);
-    if let Err(e) = scaffold.storage.save_seed(&seed).await {
+    let removed = scaffold.context_mgr.delete_seed(session_id, &seed_id);
+    if removed.is_none() {
+        send_err(tx, request_id, "seed not found").await;
+        return;
+    }
+    if let Err(e) = persist_all_seeds(scaffold, session_id).await {
         send_err(tx, request_id, &e).await;
         return;
     }
-    if let Err(e) = persist_context_state(scaffold, &ctx).await {
+    emit_context_event(scaffold, session_id, "context.seed.deleted", json!({"seed_id": seed_id})).await;
+    send_ok(tx, request_id, json!({"session_id": session_id, "seed_id": seed_id, "removed": removed})).await;
+}
+
+async fn handle_context_seed_clear(
+    scaffold: &AgentKernel,
+    tx: &mpsc::Sender<WsMessage>,
+    session_id: &str,
+    request_id: &str,
+    payload: &serde_json::Value,
+) {
+    if session_id.is_empty() {
+        send_err(tx, request_id, "session_id is required").await;
+        return;
+    }
+    let kind = payload["kind"].as_str().map(parse_seed_kind);
+    scaffold.session_mgr.get_or_create(session_id).await.ok();
+    let removed = scaffold.context_mgr.clear_seeds(session_id, kind);
+    if let Err(e) = persist_all_seeds(scaffold, session_id).await {
         send_err(tx, request_id, &e).await;
         return;
     }
-    emit_context_event(scaffold, session_id, CONTEXT_COMPACTION_APPLIED, json!({
-        "context": ctx.clone(),
-        "seed": seed.clone(),
-    })).await;
-    send_ok(tx, request_id, json!({"session_id": session_id, "active_context": ctx, "seed": seed})).await;
+    emit_context_event(scaffold, session_id, "context.seed.cleared", json!({"kind": payload["kind"], "removed_count": removed.len()})).await;
+    send_ok(tx, request_id, json!({"session_id": session_id, "kind": payload["kind"], "removed": removed})).await;
+}
+
+async fn handle_context_seed_set(
+    scaffold: &AgentKernel,
+    tx: &mpsc::Sender<WsMessage>,
+    session_id: &str,
+    request_id: &str,
+    payload: &serde_json::Value,
+) {
+    if session_id.is_empty() {
+        send_err(tx, request_id, "session_id is required").await;
+        return;
+    }
+    let content = payload["content"].as_str().unwrap_or("").to_string();
+    if content.trim().is_empty() {
+        send_err(tx, request_id, "content is required").await;
+        return;
+    }
+    let kind = parse_seed_kind(payload["kind"].as_str().unwrap_or("system_memory"));
+    let enabled = payload["enabled"].as_bool().unwrap_or(true);
+    let priority = payload["priority"].as_i64().unwrap_or(0) as i32;
+    let seed = ContextSeed {
+        seed_id: payload["seed_id"].as_str().unwrap_or("").trim().to_string(),
+        session_id: session_id.to_string(),
+        kind,
+        content,
+        enabled,
+        priority,
+    };
+    scaffold.session_mgr.get_or_create(session_id).await.ok();
+    let mut seed = seed;
+    if seed.seed_id.is_empty() {
+        seed.seed_id = format!("seed_{}", uuid::Uuid::new_v4());
+    }
+    let _removed = scaffold.context_mgr.set_seed_by_kind(session_id, seed.clone());
+    if let Err(e) = persist_all_seeds(scaffold, session_id).await {
+        send_err(tx, request_id, &e).await;
+        return;
+    }
+    emit_context_event(scaffold, session_id, "context.seed.updated", json!({"seed": seed.clone()})).await;
+    send_ok(tx, request_id, json!({"session_id": session_id, "seed": seed})).await;
 }
 
 async fn handle_update_provider(

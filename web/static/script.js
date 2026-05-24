@@ -99,7 +99,7 @@ createApp({
     const contextIncludeAfter = ref('');
     const contextSeedKind = ref('system_memory');
     const contextSeedContent = ref('');
-    const contextSummary = ref('');
+    const contextSeedMode = ref('add');
 
     const showPresetToolsModal = ref(false);
     const showApiKey = ref(false);
@@ -684,8 +684,14 @@ createApp({
             contextSeedContent.value = '';
             loadContextPreview();
           }
-          if (msg.success && (respCmd === 'context.compaction.apply') && isCurrentSession(respSessionId)) {
-            contextSummary.value = '';
+          if (msg.success && msg.payload?.seed && respCmd === 'context.seed.set' && isCurrentSession(respSessionId)) {
+            contextSeedContent.value = '';
+            loadContextPreview();
+          }
+          if (msg.success && respCmd === 'context.seed.delete' && isCurrentSession(respSessionId)) {
+            loadContextPreview();
+          }
+          if (msg.success && respCmd === 'context.seed.clear' && isCurrentSession(respSessionId)) {
             loadContextPreview();
           }
 
@@ -1221,8 +1227,10 @@ createApp({
         'context.exclude': '排除上下文消息',
         'context.include_after': '从指定消息后开始',
         'context.keep_recent': '仅保留最近 N 条',
-        'context.seed.add': '注入上下文块',
-        'context.compaction.apply': '应用压缩摘要',
+        'context.seed.add': '新增 Seed',
+        'context.seed.set': '覆盖写入 Seed',
+        'context.seed.delete': '删除 Seed',
+        'context.seed.clear': '清空 Seed',
       };
       return map[cmd] || cmd;
     }
@@ -1260,8 +1268,20 @@ createApp({
       sendCommand('context.exclude', { start_message_id: messageId, end_message_id: messageId });
     }
 
-    function addContextSeed() {
-      sendCommand('context.seed.add', {
+    async function copyMessageId(messageId) {
+      if (!messageId) return;
+      try {
+        await navigator.clipboard.writeText(messageId);
+        contextStatus.value = `已复制消息 ID：${messageId}`;
+      } catch (e) {
+        contextIncludeAfter.value = messageId;
+        contextStatus.value = '浏览器禁止直接复制，已填入起点输入框';
+      }
+    }
+
+    function saveContextSeed() {
+      const command = contextSeedMode.value === 'set' ? 'context.seed.set' : 'context.seed.add';
+      sendCommand(command, {
         kind: contextSeedKind.value,
         content: contextSeedContent.value,
         enabled: true,
@@ -1269,11 +1289,20 @@ createApp({
       });
     }
 
-    function applyCompaction() {
-      sendCommand('context.compaction.apply', {
-        summary: contextSummary.value,
-        include_after_message_id: contextIncludeAfter.value.trim() || null,
-      });
+    function deleteContextSeed(seedId) {
+      if (!seedId) return;
+      if (!confirm(`确认删除 Seed：${seedId}？`)) return;
+      sendCommand('context.seed.delete', { seed_id: seedId });
+    }
+
+    function clearContextSeedsByKind() {
+      if (!confirm(`确认清空 ${seedKindLabel(contextSeedKind.value)} 类型的所有 Seed？`)) return;
+      sendCommand('context.seed.clear', { kind: contextSeedKind.value });
+    }
+
+    function clearAllContextSeeds() {
+      if (!confirm('确认清空当前 Session 的全部 Seed？')) return;
+      sendCommand('context.seed.clear', {});
     }
 
     function contextMessageText(m) {
@@ -1879,8 +1908,10 @@ createApp({
         'context.threshold.reached': '上下文阈值',
         'context.updated': '上下文更新',
         'context.reset': '上下文重置',
-        'context.seed.added': 'Seed 已注入',
-        'context.compaction.applied': '上下文压缩',
+        'context.seed.added': 'Seed 已新增',
+        'context.seed.updated': 'Seed 已覆盖',
+        'context.seed.deleted': 'Seed 已删除',
+        'context.seed.cleared': 'Seed 已清空',
         'prompt.attached': 'Prompt 附加',
         'error': '错误',
         'stream': '流数据',
@@ -1911,7 +1942,9 @@ createApp({
         case 'context.updated': return `动作 ${tag(contextCommandName(p.action || 'context.updated'))} Mode ${tag(contextModeLabel(p.context?.mode || '—'))}`;
         case 'context.reset': return `Mode ${tag(p.context?.mode || 'full')}`;
         case 'context.seed.added': return `Seed ${tag(p.seed?.seed_id || '—')} ${tag(p.seed?.kind || '')}`;
-        case 'context.compaction.applied': return `压缩已应用 ${tag(p.context?.context_id || '')}`;
+        case 'context.seed.updated': return `Seed ${tag(p.seed?.seed_id || '—')} ${tag(p.seed?.kind || '')}`;
+        case 'context.seed.deleted': return `Seed ${tag(p.seed_id || '—')}`;
+        case 'context.seed.cleared': return `类型 ${tag(p.kind || '全部')} 删除 ${tag(p.removed_count || 0)} 条`;
         case 'prompt.attached': return `Prompt ${tag(p.prompt_name || p.name || '—')}`;
         case 'stream': return `流数据 ${tag(JSON.stringify(p).slice(0, 80))}`;
         default: return JSON.stringify(p).slice(0, 100);
@@ -2031,8 +2064,10 @@ createApp({
             'context.exclude': '排除上下文响应',
             'context.include_after': '上下文起点响应',
             'context.keep_recent': '最近消息窗口响应',
-            'context.seed.add': '注入上下文块响应',
-            'context.compaction.apply': '压缩执行响应',
+            'context.seed.add': '新增 Seed 响应',
+            'context.seed.set': '覆盖 Seed 响应',
+            'context.seed.delete': '删除 Seed 响应',
+            'context.seed.clear': '清空 Seed 响应',
             'run.cancel': '取消推理响应',
           };
           let respLabel = cmdLabels[cmd] || '命令响应';
@@ -2066,6 +2101,9 @@ createApp({
             brief += ` ${tag(contextModeLabel(p.active_context.mode))}`;
             if (p.counts) brief += ` 可见${tag(p.counts.active_messages || 0)}条 / 全量${tag(p.counts.all_messages || 0)}条`;
           }
+          if (Array.isArray(p.seeds) && p.seeds.length) {
+            brief += ` Seed${tag(p.seeds.length)}`;
+          }
           if (p.seed) brief += ` ${tag(seedKindLabel(p.seed.kind))} ${tag((p.seed.seed_id || '').slice(0,16))}`;
           if (cmd === 'context.keep_recent' && p.active_context?.rules?.keep_recent_messages !== undefined) brief += ` 保留最近 ${tag(p.active_context.rules.keep_recent_messages || '全部')} 条`;
           if (cmd === 'context.include_after' && p.active_context?.rules?.include_after_message_id) brief += ` 起点 ${tag(p.active_context.rules.include_after_message_id.slice(0,16))}`;
@@ -2095,8 +2133,10 @@ createApp({
             'context.threshold.reached':() => ({ label: '上下文阈值', brief: `使用 ${tag(p.usage_percent+'%')} Token ${tag(p.estimated_tokens)}` }),
             'context.updated':          () => ({ label: '上下文已更新', brief: `${tag(contextCommandName(p.action || 'context.updated'))} ${tag(contextModeLabel(p.context?.mode))}` }),
             'context.reset':            () => ({ label: '上下文已重置', brief: `${tag(contextModeLabel(p.context?.mode || 'full'))}` }),
-            'context.seed.added':       () => ({ label: '上下文块已注入', brief: `${tag(seedKindLabel(p.seed?.kind))} ${tag((p.seed?.seed_id||'').slice(0,16))}` }),
-            'context.compaction.applied':() =>({ label: '上下文压缩已应用', brief: `${tag(p.context?.context_id || '')}` }),
+            'context.seed.added':       () => ({ label: 'Seed 已新增', brief: `${tag(seedKindLabel(p.seed?.kind))} ${tag((p.seed?.seed_id||'').slice(0,16))}` }),
+            'context.seed.updated':     () => ({ label: 'Seed 已覆盖', brief: `${tag(seedKindLabel(p.seed?.kind))} ${tag((p.seed?.seed_id||'').slice(0,16))}` }),
+            'context.seed.deleted':     () => ({ label: 'Seed 已删除', brief: `${tag((p.seed_id||'').slice(0,16))}` }),
+            'context.seed.cleared':     () => ({ label: 'Seed 已清空', brief: `${tag(p.kind || '全部')} 删除 ${tag(p.removed_count || 0)} 条` }),
             'prompt.attached':          () => ({ label: 'Prompt 附加', brief: `${tag(p.prompt_name||p.name||'')}` }),
             'error':                    () => ({ label: '错误', brief: tag(JSON.stringify(p).slice(0,60), 'err') }),
           };
@@ -2135,7 +2175,10 @@ createApp({
         'runtime.sessions':      () => ({ label: '查询运行中会话', brief: '当前 runtime 状态' }),
         'system.stats':         () => ({ label: '系统统计', brief: '' }),
         'context.preview':      () => ({ label: '上下文预览', brief: sid }),
-        'context.compaction.apply': () => ({ label: '执行压缩', brief: sid }),
+        'context.seed.add':     () => ({ label: '新增 Seed', brief: `${sid} ${tag(seedKindLabel(p.kind))}` }),
+        'context.seed.set':     () => ({ label: '覆盖 Seed', brief: `${sid} ${tag(seedKindLabel(p.kind))}` }),
+        'context.seed.delete':  () => ({ label: '删除 Seed', brief: `${sid} ${tag((p.seed_id||'').slice(0,16))}` }),
+        'context.seed.clear':   () => ({ label: '清空 Seed', brief: `${sid} ${tag(p.kind || '全部')}` }),
         'run.cancel':           () => ({ label: '取消推理', brief: sid }),
       };
       const factory = cmdMap[cmd];
@@ -2282,7 +2325,7 @@ createApp({
       providerConfig, providerStatus,
       systemPrompt, systemPromptStatus,
       contextPreview, contextStatus, contextKeepRecent, contextIncludeAfter,
-      contextSeedKind, contextSeedContent, contextSummary,
+      contextSeedKind, contextSeedContent, contextSeedMode,
       streamingText, isStreaming, currentRunId, currentRunStatus, runStatusLabel, autoReconnect,
       streamingThinking,
       latestToolChainReport, latestTraceDetails, formatToolChainIds, toolChainStatusText, toolChainIssueCount,
@@ -2294,7 +2337,7 @@ createApp({
       saveSystemPrompt, loadSystemPrompt, loadTools,
       loadRuntimeSessions,
       loadContextPreview, resetContext, keepRecentContext, includeAfterContext,
-      excludeSingleMessage, addContextSeed, applyCompaction, contextMessageText,
+      excludeSingleMessage, copyMessageId, saveContextSeed, deleteContextSeed, clearContextSeedsByKind, clearAllContextSeeds, contextMessageText,
       contextCommandName, contextModeLabel, seedKindLabel,
       loadFullMessages, onFullMessagesScroll, roleLabel, roleColor, formatMessageTime,
       filteredEvents, filteredRaw, statsExpanded, showPresetToolsModal, renderMarkdown,

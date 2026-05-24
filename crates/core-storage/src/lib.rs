@@ -44,6 +44,7 @@ pub trait Storage: Send + Sync {
 
     // ContextSeed
     async fn save_seed(&self, seed: &ContextSeed) -> Result<(), String>;
+    async fn save_seeds(&self, session_id: &str, seeds: &[ContextSeed]) -> Result<(), String>;
     async fn get_seeds(&self, session_id: &str) -> Result<Vec<ContextSeed>, String>;
 
     // JSONL 事件日志
@@ -211,6 +212,22 @@ impl Storage for FileStorage {
         self.append_jsonl(&self.seeds_file(&seed.session_id), seed).await
     }
 
+    async fn save_seeds(&self, session_id: &str, seeds: &[ContextSeed]) -> Result<(), String> {
+        self.ensure_session_dir(session_id).await?;
+        let path = self.seeds_file(session_id);
+        if seeds.is_empty() {
+            tokio::fs::write(path, "").await.map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        let mut content = String::new();
+        for seed in seeds {
+            let mut line = serde_json::to_string(seed).map_err(|e| e.to_string())?;
+            line.push('\n');
+            content.push_str(&line);
+        }
+        tokio::fs::write(path, content).await.map_err(|e| e.to_string())
+    }
+
     async fn get_seeds(&self, session_id: &str) -> Result<Vec<ContextSeed>, String> {
         self.read_jsonl(&self.seeds_file(session_id)).await
     }
@@ -376,6 +393,7 @@ impl Storage for MemoryStorage {
     async fn save_context_state(&self, _ctx: &ContextState) -> Result<(), String> { Ok(()) }
     async fn get_context_state(&self, _session_id: &str) -> Result<Option<ContextState>, String> { Ok(None) }
     async fn save_seed(&self, _seed: &ContextSeed) -> Result<(), String> { Ok(()) }
+    async fn save_seeds(&self, _session_id: &str, _seeds: &[ContextSeed]) -> Result<(), String> { Ok(()) }
     async fn get_seeds(&self, _session_id: &str) -> Result<Vec<ContextSeed>, String> { Ok(vec![]) }
     async fn append_event_log(&self, _event: &EventEnvelope) -> Result<(), String> { Ok(()) }
 

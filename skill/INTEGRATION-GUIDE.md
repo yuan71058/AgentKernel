@@ -183,23 +183,30 @@ context.include_after     ← 从某条消息之后开始纳入
 context.reset             ← 恢复到默认的 full 模式，清除所有排除/截断规则
 ```
 
-### 8.5 注入记忆/偏好
+### 8.5 Seed 管理
 
 ```
-context.seed.add          ← 向上下文注入一段记忆（如用户偏好、世界状态）
+context.seed.add   ← 新增 seed
+context.seed.set   ← 按类型覆盖写入 seed
+context.seed.delete ← 删除指定 seed
+context.seed.clear ← 清空某类 / 全部 seeds
 ```
 
-### 8.6 压缩上下文（高级）
+Seed 是独立于消息历史的动态前置上下文块，默认不受消息裁剪规则影响。
+
+### 8.6 消息裁剪
+
 
 当 token 用量过高时：
 
 ```
-① session.messages        ← 读取全部历史
-② （外部 AI 总结历史）     ← 生成压缩摘要
-③ context.compaction.apply ← 注入摘要 + 切换到压缩模式
+① session.messages                      ← 读取全部历史
+② （外部 AI 总结历史）                   ← 生成摘要
+③ context.seed.set(kind=compaction_summary) ← 覆盖写入摘要 seed
+④ context.include_after(message_id)      ← 从最后一条旧消息之后继续
 ```
 
-> Core 不负责压缩逻辑，只负责接受压缩结果。压缩是外部工作流。
+> Core 不负责压缩逻辑，只负责 seed 管理和消息视图裁剪。压缩是外部工作流。
 
 ---
 

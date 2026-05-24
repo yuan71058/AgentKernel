@@ -189,7 +189,10 @@ async def connect():
       "session.list",
       "system.stats",
       "context.preview",
-      "context.compaction.apply",
+      "context.seed.add",
+      "context.seed.delete",
+      "context.seed.clear",
+      "context.seed.set",
       "system_prompt.get",
       "system_prompt.set",
       "tool.list",
@@ -765,9 +768,44 @@ async def connect():
 
 ### 4.11 `tool.execute.result` — 回传工具执行结果
 
-**作用**: 客户端收到 `tool.call.request` 事件后，执行工具并通过此命令回传结果。
+**作用**: 客户端收到 `tool.call.request` 事件后，执行工具并通过此命令回传最终结果。
 
-**请求**:
+> **标准约定**: `tool.call.request` 和 `tool.execute.result` 共同组成一组工具调用闭环。前者是请求，后者是结果。外部能力套件以后按这个格式接入即可。
+
+#### 4.11.1 `tool.call.request` 标准请求格式
+
+服务端发给业务端/能力执行器的标准事件：
+
+```json
+{
+  "type": "event",
+  "id": "evt_xxx",
+  "event_type": "tool.call.request",
+  "session_id": "my_session",
+  "run_id": "run_xxx",
+  "trace_id": "trace_xxx",
+  "timestamp": "2026-05-22T12:00:00Z",
+  "payload": {
+    "call_id": "call_xxx",
+    "tool_name": "web_search",
+    "input": { "query": "AgentKernel" },
+    "timeout_ms": 5000
+  },
+  "event_seq": 12
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `session_id` | string | **是** | 所属会话 |
+| `run_id` | string | **是** | 所属运行流程 |
+| `trace_id` | string | 否 | 链路追踪 ID，预留 |
+| `payload.call_id` | string | **是** | 本次工具调用唯一 ID，用于结果回填 |
+| `payload.tool_name` | string | **是** | 工具名 |
+| `payload.input` | object | **是** | 工具输入参数 |
+| `payload.timeout_ms` | u64 | 否 | 允许等待的超时时间；`0` 表示无限等待 |
+
+#### 4.11.2 `tool.execute.result` 标准回传格式
 
 ```json
 {
@@ -784,11 +822,19 @@ async def connect():
 
 | payload 字段 | 类型 | 必填 | 说明 |
 |--------------|------|------|------|
-| `call_id` | string | **是** | 对应 `tool.call.request` 事件中的 `call_id` |
-| `result` | string | **是** | 执行结果文本 |
+| `call_id` | string | **是** | 对应 `tool.call.request` 中的 `call_id` |
+| `result` | string | **是** | 执行结果，**必须是字符串**；如果你要回传结构化数据，请先 `JSON.stringify` 后再放进来 |
 | `is_error` | bool | 否 | 是否为错误结果，默认 `false` |
 
-> **注意**: 此命令不会返回标准 Response。服务端消费后直接唤醒内部等待通道。
+#### 4.11.3 结果回传规则
+
+- `call_id` 必须原样回传，不能改写
+- 一次 `call_id` 只允许最终确认一次
+- `tool.execute.result` **不会返回标准 Response**，服务端消费后直接唤醒内部等待通道
+- 如果执行失败，建议把错误信息放进 `result`，并将 `is_error` 设为 `true`
+- 如果返回的是复杂对象，推荐格式：`result: "{\"ok\":true,\"data\":...}"`
+
+> **注意**: 前端不应依赖此命令的 Response 做渲染；它是一个纯回填命令。
 
 ---
 
@@ -1324,7 +1370,9 @@ async def connect():
 
 ---
 
-### 4.26 `context.seed.add` — 注入上下文 Seed
+### 4.26 `context.seed.add` — 新增上下文 Seed
+
+Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构建模型输入时位于普通 messages 之前，且不受 `include_after` / `keep_recent` 等消息裁剪规则影响。
 
 **请求**:
 
@@ -1346,51 +1394,86 @@ async def connect():
 |--------------|------|------|
 | `content` | string | Seed 文本 |
 | `kind` | string | 类型：`system_memory` / `user_preference` / `world_state` / `agent_state` / `compaction_summary` |
-| `enabled` | bool | 是否启用 |
-| `priority` | i32 | 优先级 |
+| `enabled` | bool | 是否启用，默认 `true` |
+| `priority` | i32 | 优先级，默认 `0`；数值越小越靠前注入 |
 
 **额外事件**: `context.seed.added`
 
-> **注意**: 通过 `seed.add` 手动注入的种子，如果未被任何 ContextState 的 `base_seed_ids` 引用，在压缩后的新上下文中**不会自动注入模型输入**。只有 `compaction.apply` 创建的 summary seed 会被自动加入 `base_seed_ids`。
-
 ---
 
-### 4.27 `context.compaction.apply` — 应用压缩摘要
+### 4.27 `context.seed.set` — 按类型覆盖写入 Seed
 
-**作用**: 创建压缩摘要 Seed，替换旧压缩上下文，切换 Active Context。
-
-**行为说明**:
-- 自动清除该 session 旧的 `CompactionSummary` 类型 seeds（多次压缩不会累积）
-- 创建新 ContextState（mode=`compacted`），`base_seed_ids` 指向新 summary seed
-- `include_after_message_id`：传入后，模型只看到该消息之后的新消息 + summary seed；**不传则全量历史仍会提交**，压缩无实际效果
-- 下次 `session.send` 时，`build_model_input` 只注入 `base_seed_ids` 引用的 seeds，非引用的 seeds 不进入模型上下文
+适合写入“同类型只保留一份”的动态上下文，例如压缩摘要、用户偏好、世界状态。执行时会先删除当前 Session 中同 kind 的旧 seeds，再写入新 seed。
 
 **请求**:
 
 ```json
 {
-  "command": "context.compaction.apply",
+  "command": "context.seed.set",
   "request_id": "r25",
   "session_id": "my_session",
   "payload": {
-    "summary": "这是压缩后的历史摘要...",
-    "include_after_message_id": "msg_xxx"
+    "kind": "compaction_summary",
+    "content": "这是压缩后的历史摘要...",
+    "enabled": true,
+    "priority": 100
   }
 }
 ```
 
-**payload 字段**:
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `summary` | string | ✅ | 压缩摘要内容 |
-| `include_after_message_id` | string | 可选 | 仅保留该消息之后的新消息；不传则旧消息全部保留在上下文中 |
-
-**额外事件**: `context.compaction.applied`
+**额外事件**: `context.seed.updated`
 
 ---
 
-### 4.28 `events.pull` — 断线补拉事件
+### 4.28 `context.seed.delete` — 删除指定 Seed
+
+**请求**:
+
+```json
+{
+  "command": "context.seed.delete",
+  "request_id": "r26",
+  "session_id": "my_session",
+  "payload": {
+    "seed_id": "seed_xxx"
+  }
+}
+```
+
+| payload 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `seed_id` | string | ✅ | 要删除的 seed ID |
+
+**额外事件**: `context.seed.deleted`
+
+---
+
+### 4.29 `context.seed.clear` — 清空 Seeds
+
+按 kind 清空；不传 kind 时清空当前 Session 的全部 seeds。
+
+**请求**:
+
+```json
+{
+  "command": "context.seed.clear",
+  "request_id": "r27",
+  "session_id": "my_session",
+  "payload": {
+    "kind": "compaction_summary"
+  }
+}
+```
+
+| payload 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `kind` | string | 可选 | 不传则清空全部 seeds |
+
+**额外事件**: `context.seed.cleared`
+
+---
+
+### 4.30 `events.pull` — 断线补拉事件
 
 **请求**:
 
@@ -1424,7 +1507,7 @@ async def connect():
 
 ---
 
-### 4.29 `events.subscribe` — 订阅实时事件
+### 4.31 `events.subscribe` — 订阅实时事件
 
 **请求**:
 
@@ -1460,7 +1543,7 @@ async def connect():
 
 ---
 
-### 4.30 `run.cancel` — 中断运行
+### 4.32 `run.cancel` — 中断运行
 
 **请求**:
 
@@ -1507,17 +1590,19 @@ async def connect():
 | `run.completed` | 运行结束（含统计） | ✅ |
 | `run.cancelled` | 运行被中断 | - |
 | `tool_chain.diagnosed` | 工具链诊断 | ✅ |
-| `tool.call.request` | 请求客户端执行工具 | - |
-| `tool.call.result` | 工具执行结果 | - |
+| `tool.call.request` | 请求业务端/能力执行器执行工具 | - |
+| `tool.call.result` | 工具执行结果已回填 | - |
 | `tool.registered` | 工具注册完成 | - |
 | `error` | 运行期错误 | ✅ |
 | `session.created` | Session 创建 | - |
 | `session.closed` | Session 关闭 | - |
 | `context.threshold.reached` | 上下文 token 达阈值 | - |
-| `context.compaction.applied` | 压缩摘要已应用 | - |
 | `context.reset` | 上下文重置 | - |
 | `context.updated` | 上下文规则更新 | - |
 | `context.seed.added` | 新增 seed | - |
+| `context.seed.updated` | 覆盖写入 seed | - |
+| `context.seed.deleted` | 删除 seed | - |
+| `context.seed.cleared` | 清空 seed | - |
 
 ### 5.2 关键事件详解
 
@@ -1566,24 +1651,65 @@ async def connect():
 }
 ```
 
-#### `tool.call.request` — 请求客户端执行工具
+#### `tool.call.request` — 请求业务端/能力执行器执行工具
 
 ```json
 {
   "type": "event",
   "event_type": "tool.call.request",
+  "session_id": "my_session",
+  "run_id": "run_xxx",
+  "trace_id": "trace_xxx",
+  "timestamp": "2026-05-22T12:00:00Z",
+  "payload": {
+    "call_id": "call_xxx",
+    "tool_name": "web_search",
+    "input": { "query": "AgentKernel" },
+    "timeout_ms": 5000
+  },
+  "event_seq": 12
+}
+```
+
+#### 标准字段说明
+
+| 字段 | 说明 |
+|------|------|
+| `session_id` | 所属会话 |
+| `run_id` | 所属运行流程 |
+| `trace_id` | 链路追踪 ID，预留 |
+| `payload.call_id` | 本次工具调用唯一 ID，用于结果回填 |
+| `payload.tool_name` | 工具名 |
+| `payload.input` | 工具输入参数 |
+| `payload.timeout_ms` | 允许等待的超时时间；`0` 表示无限等待 |
+
+客户端收到后应：
+1. 本地或转发执行对应工具
+2. 通过 `tool.execute.result` 命令回传结果
+
+#### `tool.call.result` — 工具执行结果已回填
+
+```json
+{
+  "type": "event",
+  "event_type": "tool.call.result",
+  "session_id": "my_session",
+  "run_id": "run_xxx",
   "payload": {
     "tool_name": "web_search",
     "call_id": "call_xxx",
-    "input": { "query": "AgentKernel" },
-    "timeout_ms": 0
+    "result": "2026-05-22 12:00:00",
+    "is_error": false
   }
 }
 ```
 
-客户端收到后应：
-1. 本地执行对应工具
-2. 通过 `tool.execute.result` 命令回传结果
+#### 标准回填规则
+
+- `call_id` 必须与 `tool.call.request` 中一致
+- `result` 建议为字符串；如需返回复杂结构，请先序列化为字符串
+- `is_error = true` 表示执行失败
+- 该事件用于事件流、trace、debug、replay，不是再次要求业务端执行
 
 #### `error` — 运行期错误
 
@@ -1630,8 +1756,8 @@ async def connect():
    - tool_chain.diagnosed
    - model.delta（模型可能先输出文字）
    - tool.call.request → 收到工具调用请求
-4. 客户端执行工具
-5. 发送 tool.execute.result（带 call_id 和结果）
+4. 业务端执行工具，或转发给外部能力套件执行
+5. 业务端发送 tool.execute.result（带 call_id 和结果）
 6. 继续监听：
    - tool.call.result
    - model.delta × N
@@ -1640,7 +1766,70 @@ async def connect():
 7. 收到 session.send Response
 ```
 
-### 6.3 断线重连恢复
+### 6.3 外部能力套件桥接流程
+
+适用于：业务端不想重复实现浏览器、文件、爬虫、数据库等能力，而是把 AgentKernel 下发的工具请求转发给独立能力套件。
+
+```text
+AgentKernel
+  -> tool.call.request
+业务端 Tool Bridge
+  -> 按 tool_name/input 转发给外部能力套件
+外部能力套件
+  -> 返回标准 Tool Result
+业务端 Tool Bridge
+  -> tool.execute.result 回填 AgentKernel
+AgentKernel
+  -> tool.call.result + 继续模型推理
+```
+
+推荐业务端转发给外部能力套件时使用的中间协议：
+
+```json
+{
+  "call_id": "call_xxx",
+  "tool_name": "browser_open",
+  "input": { "url": "https://example.com" },
+  "context": {
+    "session_id": "my_session",
+    "run_id": "run_xxx",
+    "trace_id": "trace_xxx",
+    "timeout_ms": 10000
+  }
+}
+```
+
+外部能力套件返回：
+
+```json
+{
+  "call_id": "call_xxx",
+  "ok": true,
+  "result": "页面已打开",
+  "error": null,
+  "metadata": {
+    "duration_ms": 1200
+  }
+}
+```
+
+业务端再转换为 AgentKernel 标准回填：
+
+```json
+{
+  "command": "tool.execute.result",
+  "session_id": "my_session",
+  "payload": {
+    "call_id": "call_xxx",
+    "result": "页面已打开",
+    "is_error": false
+  }
+}
+```
+
+> **边界原则**: 外部能力套件不要直接依赖 AgentKernel 内部实现。它只需要理解 `call_id / tool_name / input / context`，然后返回 `call_id / ok / result / error`。
+
+### 6.4 断线重连恢复
 
 ```
 1. 本地记录最后的 event_seq
@@ -1677,6 +1866,7 @@ async def connect():
 
 - 此命令被消费后不会返回 `send_ok`
 - 前端不应依赖此命令的响应做渲染
+- `tool.call.result` 才是工具闭环完成后的标准事件结果
 
 ### 7.5 Provider 配置持久化
 

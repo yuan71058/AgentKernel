@@ -25,7 +25,6 @@ pub mod event_types {
     pub const TOOL_CALL_ERROR: &str = "tool.call.error";
     pub const TOOL_REGISTERED: &str = "tool.registered";
     pub const CONTEXT_THRESHOLD_REACHED: &str = "context.threshold.reached";
-    pub const CONTEXT_COMPACTION_APPLIED: &str = "context.compaction.applied";
     pub const PROMPT_ATTACHED: &str = "prompt.attached";
     pub const ERROR: &str = "error";
 }

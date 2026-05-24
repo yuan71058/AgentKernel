@@ -92,29 +92,16 @@ impl ContextManager {
         }
     }
 
-    /// 构建完整模型输入：context seeds (按 active context 的 base_seed_ids 过滤) + 上下文消息
+    /// 构建完整模型输入：enabled seeds + 上下文消息
     pub fn build_model_input(&self, session_id: &str) -> Vec<Message> {
         let mut result = Vec::new();
 
-        // 1. Context Seeds — 只注入 active context 的 base_seed_ids 指定的 seeds
-        let active_ctx = self.get_context(session_id);
+        // 1. Context Seeds — 独立的动态前置上下文块，不受消息裁剪规则影响
         let seeds = self.seeds.read().unwrap();
         if let Some(session_seeds) = seeds.get(session_id) {
-            let filtered: Vec<_> = if let Some(ref ctx) = active_ctx {
-                if !ctx.rules.base_seed_ids.is_empty() {
-                    // 只保留 base_seed_ids 中引用的、且 enabled 的 seeds
-                    session_seeds.iter().filter(|s| {
-                        s.enabled && ctx.rules.base_seed_ids.contains(&s.seed_id)
-                    }).collect()
-                } else {
-                    // base_seed_ids 为空 → 全部 enabled seeds（向后兼容）
-                    session_seeds.iter().filter(|s| s.enabled).collect()
-                }
-            } else {
-                // 无 active context → 全部 enabled seeds
-                session_seeds.iter().filter(|s| s.enabled).collect()
-            };
-            for seed in filtered {
+            let mut enabled_seeds: Vec<_> = session_seeds.iter().filter(|s| s.enabled).collect();
+            enabled_seeds.sort_by_key(|s| s.priority);
+            for seed in enabled_seeds {
                 result.push(Message {
                     message_id: seed.seed_id.clone(),
                     session_id: session_id.to_string(),
@@ -233,41 +220,6 @@ impl ContextManager {
         ctx
     }
 
-    /// 应用压缩摘要：清除旧压缩 seeds，写入新 summary seed，切换到 compacted context
-    pub fn apply_compaction(&self, session_id: &str, summary: String, include_after_message_id: Option<String>) -> (ContextState, ContextSeed) {
-        // 清除该 session 旧的 CompactionSummary seeds
-        {
-            let mut seeds = self.seeds.write().unwrap();
-            if let Some(session_seeds) = seeds.get_mut(session_id) {
-                session_seeds.retain(|s| s.kind != SeedKind::CompactionSummary);
-            }
-        }
-
-        let seed = ContextSeed {
-            seed_id: format!("seed_{}", uuid::Uuid::new_v4()),
-            session_id: session_id.to_string(),
-            kind: SeedKind::CompactionSummary,
-            content: summary,
-            enabled: true,
-            priority: 100,
-        };
-        self.add_seed(session_id, seed.clone());
-        let ctx = ContextState {
-            context_id: format!("ctx_{}", uuid::Uuid::new_v4()),
-            session_id: session_id.to_string(),
-            mode: ContextMode::Compacted,
-            rules: ContextRules {
-                include_after_message_id,
-                exclude_ranges: Vec::new(),
-                keep_recent_messages: None,
-                base_seed_ids: vec![seed.seed_id.clone()],
-            },
-            created_at: chrono::Utc::now(),
-        };
-        self.set_context(session_id, ctx.clone());
-        (ctx, seed)
-    }
-
     /// 添加 Context Seed
     pub fn add_seed(&self, session_id: &str, seed: ContextSeed) {
         let mut seeds = self.seeds.write().unwrap();
@@ -280,6 +232,51 @@ impl ContextManager {
     pub fn get_seeds(&self, session_id: &str) -> Vec<ContextSeed> {
         let seeds = self.seeds.read().unwrap();
         seeds.get(session_id).cloned().unwrap_or_default()
+    }
+
+    /// 删除指定 Context Seed
+    pub fn delete_seed(&self, session_id: &str, seed_id: &str) -> Option<ContextSeed> {
+        let mut seeds = self.seeds.write().unwrap();
+        let session_seeds = seeds.get_mut(session_id)?;
+        let pos = session_seeds.iter().position(|s| s.seed_id == seed_id)?;
+        Some(session_seeds.remove(pos))
+    }
+
+    /// 按 kind 清空 Context Seeds；kind 为空则清空全部 seeds
+    pub fn clear_seeds(&self, session_id: &str, kind: Option<SeedKind>) -> Vec<ContextSeed> {
+        let mut seeds = self.seeds.write().unwrap();
+        let session_seeds = seeds.entry(session_id.to_string()).or_insert_with(Vec::new);
+        if let Some(kind) = kind {
+            let mut removed = Vec::new();
+            session_seeds.retain(|seed| {
+                if seed.kind == kind {
+                    removed.push(seed.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            removed
+        } else {
+            std::mem::take(session_seeds)
+        }
+    }
+
+    /// 按 kind 覆盖写入 Context Seed
+    pub fn set_seed_by_kind(&self, session_id: &str, seed: ContextSeed) -> Vec<ContextSeed> {
+        let mut seeds = self.seeds.write().unwrap();
+        let session_seeds = seeds.entry(session_id.to_string()).or_insert_with(Vec::new);
+        let mut removed = Vec::new();
+        session_seeds.retain(|existing| {
+            if existing.kind == seed.kind {
+                removed.push(existing.clone());
+                false
+            } else {
+                true
+            }
+        });
+        session_seeds.push(seed);
+        removed
     }
 
     /// 清除 session 所有状态
