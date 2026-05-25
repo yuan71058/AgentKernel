@@ -248,7 +248,7 @@ Currently, file-based persistence is prioritized for easy debugging and viewing 
 **License:** MIT<br>
 **Friendly Links:** [LINUX DO](https://linux.do/)<br>
 **Community Chat:** <br>
-QQ Group `250892941` <br>
+
 <a href="https://discord.gg/mcQtYDVjW"><img src="https://img.shields.io/badge/Discord-Join%20Us-7289DA?style=flat-square&logo=discord&logoColor=white" alt="Discord"></a>
 
 [![Star History Chart](https://api.star-history.com/svg?repos=cih1996/AgentKernel\&type=Date)](https://www.star-history.com/#cih1996/AgentKernel\&Date)

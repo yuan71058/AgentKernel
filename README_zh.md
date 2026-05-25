@@ -248,7 +248,6 @@ python3 server.py
 **License:** MIT<br>
 **友情链接:** [LINUX DO](https://linux.do/)<br>
 **社区交流:** <br>
-QQ群 `250892941` <br>
 <a href="https://discord.gg/mcQtYDVjW"><img src="https://img.shields.io/badge/Discord-Join%20Us-7289DA?style=flat-square&logo=discord&logoColor=white" alt="Discord"></a>
 
 [![Star History Chart](https://api.star-history.com/svg?repos=cih1996/AgentKernel\&type=Date)](https://www.star-history.com/#cih1996/AgentKernel\&Date)
