@@ -122,6 +122,13 @@ sequenceDiagram
 3. **⚡ 事件流即一等公民**：运行过程中主动推送 `model.delta`、`tool.call.request` 等状态；如果供应商支持 reasoning / thinking 流式透传，也会通过 `model.delta.payload.event_type = "thinking"` 往外输出，方便调试与分布式部署。
 4. **🪶 保持极致轻量**：不内置重型的记忆系统、规则库或技能市场。坚守边界，只做跨平台复用的 Runtime。
 
+### 🧩 配套能力示例
+
+这些项目可以和 AgentKernel 搭配使用，用来快速补齐 MCP 发现、执行和本地系统操作能力：
+
+- [agentkernel-mcp-framework](https://github.com/cih1996/agentkernel-mcp-framework)：独立的 MCP 发现和执行工具，适合作为你的项目与 MCP 能力之间的桥接层。
+- [agentkernel-capabilities](https://github.com/cih1996/agentkernel-capabilities)：基础系统操作 MCP，提供搜索、查找、读文件、编辑文件、Bash 等常用能力。
+
 ## ⚖️ 适用场景对比
 
 | ✅ 适合 AgentKernel 的场景                                                                  | ❌ 不适合的场景                                                                   |

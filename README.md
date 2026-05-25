@@ -122,6 +122,13 @@ In this flow, AgentKernel does not care how your business works and does not for
 3. **⚡ Event Streams as First-Class Citizens**: Proactively pushes states like `model.delta` and `tool.call.request` during execution. If the provider supports reasoning/thinking stream passthrough, it also outputs via `model.delta.payload.event_type = "thinking"`, facilitating debugging and distributed deployment.
 4. **🪶 Extremely Lightweight**: Does not have built-in heavy memory systems, rule libraries, or skill markets. Sticks to its boundaries, acting purely as a cross-platform reusable Runtime.
 
+### 🧩 Companion Capability Examples
+
+These projects work well with AgentKernel and can quickly add MCP discovery, execution, and local system-operation capabilities:
+
+- [agentkernel-mcp-framework](https://github.com/cih1996/agentkernel-mcp-framework): An independent MCP discovery and execution tool, suitable as the bridge between your project and MCP capabilities.
+- [agentkernel-capabilities](https://github.com/cih1996/agentkernel-capabilities): A basic system-operation MCP that provides common capabilities such as search, file lookup, file reading, file editing, and Bash execution.
+
 ## ⚖️ Use Case Comparison
 
 | ✅ Suitable for AgentKernel                                                                  | ❌ Unsuitable Scenarios                                                                   |
