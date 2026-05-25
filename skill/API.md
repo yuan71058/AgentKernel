@@ -34,7 +34,39 @@
 - 所有消息均为 JSON 文本帧（`Message::Text`）
 - 支持 WebSocket Ping/Pong 保活
 
-### 1.3 连接示例
+### 1.3 通讯日志
+
+AgentKernel 会把业务端与 Kernel 的 WebSocket 通讯独立落盘，便于排查 session 历史不完整时的问题。
+
+默认位置：
+
+```text
+.aicore/logs/comm.jsonl
+.aicore/logs/comm.1.jsonl
+.aicore/logs/comm.2.jsonl
+...
+```
+
+每行是一个 JSON 记录，包含：
+
+| 字段 | 说明 |
+|------|------|
+| `ts` | UTC 时间 |
+| `direction` | `client_to_server` / `server_to_client` / `connection.open` / `connection.close` |
+| `conn_id` | WS 连接 ID |
+| `command` | 客户端命令名，服务端事件/响应可为空 |
+| `session_id` | 会话 ID |
+| `payload` | 原始命令、响应或事件内容 |
+
+启动参数：
+
+```bash
+agentkernel --comm-log-dir .aicore/logs --comm-log-max-bytes 10485760 --comm-log-keep-files 10
+```
+
+默认单文件 10MB，保留 10 个历史文件。
+
+### 1.4 连接示例
 
 **JavaScript**:
 ```javascript
@@ -173,6 +205,7 @@ async def connect():
   "payload": {
     "commands": [
       "session.send",
+      "session.retry",
       "session.message.insert",
       "tool.register",
       "tool.unregister",
@@ -182,6 +215,9 @@ async def connect():
       "runtime.sessions",
       "session.get",
       "session.info",
+      "session.close",
+      "session.archive",
+      "session.unarchive",
       "session.delete",
       "session.clear",
       "session.fork",
@@ -292,7 +328,7 @@ async def connect():
 **执行过程中的事件流**（已验证）:
 
 ```
-→ Command: session.send
+→ Command: session.send / session.retry
 ← Event: run.started           (provider/model 信息)
 ← Event: tool_chain.diagnosed  (工具链诊断)
 ← Event: model.delta           (流式文本增量，多次)
@@ -301,7 +337,7 @@ async def connect():
   ...
 ← Event: model.completed       (完整文本)
 ← Event: run.completed         (运行统计)
-← Response: session.send       (最终结果)
+← Response: session.send / session.retry       (最终结果)
 ```
 
 **run.started 实际数据**:
@@ -350,7 +386,47 @@ async def connect():
 
 ---
 
-### 4.2 `session.message.insert` — 插入消息（不触发推理）
+### 4.2 `session.retry` — 续跑上一轮失败推理
+
+**作用**: 基于当前已落盘消息历史继续推理，不新增 user message。适合上一轮在工具结果回填后、继续请求模型时失败的场景。
+
+**请求**:
+
+```json
+{
+  "command": "session.retry",
+  "request_id": "r_retry1",
+  "session_id": "my_session",
+  "payload": {
+    "max_repeated_tool_calls": 10
+  }
+}
+```
+
+| payload 字段 | 类型 | 必填 | 说明 |
+|--------------|------|------|------|
+| `max_repeated_tool_calls` | u32 | 否 | 连续相同工具调用检测阈值，默认 10 |
+
+**允许重试**:
+- 最后一条有效消息是 `user`，表示用户输入后还没有最终 assistant 输出。
+- 最后一条有效消息是 `tool_result`，表示工具结果已回填，可直接带着工具结果继续请求模型。
+
+**拒绝重试**:
+- 最后一条有效消息是普通 `assistant` 且不含 `tool_use`，说明已经有最终 AI 输出。
+- 最后一条有效消息是含 `tool_use` 的 `assistant`，说明还有 pending tool call 没有结果，不能凭空续跑。
+- 当前 session 仍有活跃 run。
+
+**成功响应**: 与 `session.send` 基本一致，额外包含：
+
+```json
+{
+  "retried": true
+}
+```
+
+---
+
+### 4.3 `session.message.insert` — 插入消息（不触发推理）
 
 **作用**: 往 session 消息历史中插入一条 user 或 assistant 消息，不触发模型推理。下次 `session.send` 时这些消息会作为上下文的一部分被模型看到。
 
@@ -406,7 +482,7 @@ async def connect():
 
 ---
 
-### 4.3 `provider.update` — 更新 Session 级 Provider 配置
+### 4.4 `provider.update` — 更新 Session 级 Provider 配置
 
 **作用**: 为指定 session 设置模型供应商覆盖配置，持久化到 session metadata。
 
@@ -463,7 +539,7 @@ async def connect():
 
 ---
 
-### 4.4 `provider.get` — 读取 Provider 配置
+### 4.5 `provider.get` — 读取 Provider 配置
 
 **作用**: 获取当前 session 的 provider 配置；无覆盖则返回全局默认。
 
@@ -507,7 +583,7 @@ async def connect():
 
 ---
 
-### 4.5 `system_prompt.set` — 设置系统提示词
+### 4.6 `system_prompt.set` — 设置系统提示词
 
 **作用**: 设置系统提示词。带 `session_id` 时持久化为 session override。
 
@@ -548,7 +624,7 @@ async def connect():
 
 ---
 
-### 4.6 `system_prompt.get` — 读取系统提示词
+### 4.7 `system_prompt.get` — 读取系统提示词
 
 **请求**:
 
@@ -578,7 +654,7 @@ async def connect():
 
 ---
 
-### 4.7 `tool.register` — 注册工具
+### 4.8 `tool.register` — 注册工具
 
 **作用**: 向 Kernel 注册一个可被模型调用的工具。带 `session_id` 时持久化工具快照到 session metadata。
 
@@ -645,7 +721,7 @@ async def connect():
 
 ---
 
-### 4.8 `tool.unregister` — 注销工具
+### 4.9 `tool.unregister` — 注销工具
 
 **请求**:
 
@@ -676,7 +752,7 @@ async def connect():
 
 ---
 
-### 4.9 `tool.list` — 获取工具列表
+### 4.10 `tool.list` — 获取工具列表
 
 **请求**:
 
@@ -752,7 +828,7 @@ async def connect():
 
 ---
 
-### 4.10 `tool.get` — 获取单个工具详情
+### 4.11 `tool.get` — 获取单个工具详情
 
 **请求**:
 
@@ -798,7 +874,7 @@ async def connect():
 
 ---
 
-### 4.11 `tool.execute.result` — 回传工具执行结果
+### 4.12 `tool.execute.result` — 回传工具执行结果
 
 **作用**: 客户端收到 `tool.call.request` 事件后，执行工具并通过此命令回传最终结果。
 
@@ -870,7 +946,7 @@ async def connect():
 
 ---
 
-### 4.12 `session.list` — 获取 Session 列表
+### 4.13 `session.list` — 获取 Session 列表
 
 **请求**:
 
@@ -890,7 +966,7 @@ async def connect():
 |--------------|------|------|
 | `page` | u32 | 页码，从 0 开始 |
 | `limit` | u32 | 每页条数，最大 100 |
-| `status` | string | 按状态过滤：`active` / `paused` / `closed` |
+| `status` | string | 按状态过滤：`active` / `paused` / `closed` / `archived`。不传时默认不返回归档会话；查看归档需传 `archived` |
 
 **成功响应**（已验证）:
 
@@ -925,7 +1001,7 @@ async def connect():
 
 ---
 
-### 4.13 `session.info` — 获取 Session 详情
+### 4.14 `session.info` — 获取 Session 详情
 
 **请求**:
 
@@ -971,7 +1047,7 @@ async def connect():
 
 ---
 
-### 4.14 `session.get` — 获取 Session 简要统计
+### 4.15 `session.get` — 获取 Session 简要统计
 
 **请求**:
 
@@ -1003,7 +1079,7 @@ async def connect():
 
 ---
 
-### 4.15 `session.messages` — 分页读取全量消息
+### 4.16 `session.messages` — 分页读取全量消息
 
 **请求**:
 
@@ -1070,33 +1146,90 @@ async def connect():
 
 ---
 
-### 4.16 `session.delete` — 删除 Session
+### 4.17 `session.close` / `session.archive` / `session.unarchive` / `session.delete` — 会话生命周期管理
 
-**请求**:
+#### `session.close` — 关闭会话
+
+**作用**: 卸载当前内存运行态并将 session 状态写为 `closed`，但完整保留 `.aicore/sessions/<session_id>` 历史目录。下次使用同一 `session_id` 时仍可从磁盘恢复。
 
 ```json
 {
-  "command": "session.delete",
-  "request_id": "r15",
+  "command": "session.close",
+  "request_id": "r15_close",
   "session_id": "my_session",
   "payload": {}
 }
 ```
 
-**成功响应**:
+成功响应：
 
 ```json
 {
   "type": "response",
-  "request_id": "r15",
+  "request_id": "r15_close",
   "success": true,
-  "payload": { "session_id": "my_session", "deleted": true }
+  "payload": {
+    "session_id": "my_session",
+    "closed": true,
+    "unloaded": true,
+    "note": "session history preserved in storage"
+  }
+}
+```
+
+#### `session.archive` — 归档会话
+
+**作用**: 只把 `session.json.status` 写为 `archived`，不移动目录、不删除历史。默认 `session.list` 不返回归档会话；查看归档需调用 `session.list` 并传 `status: "archived"`。
+
+```json
+{
+  "command": "session.archive",
+  "request_id": "r15_archive",
+  "session_id": "my_session",
+  "payload": {}
+}
+```
+
+#### `session.unarchive` — 恢复归档
+
+**作用**: 将归档会话状态恢复为 `closed`，重新出现在默认会话列表中，但不会自动启动运行。
+
+```json
+{
+  "command": "session.unarchive",
+  "request_id": "r15_unarchive",
+  "session_id": "my_session",
+  "payload": {}
+}
+```
+
+#### `session.delete` — 永久删除会话
+
+**作用**: 删除 `.aicore/sessions/<session_id>` 整个持久化目录，并移除内存索引。该操作不可恢复，必须显式传 `payload.permanent=true`。
+
+```json
+{
+  "command": "session.delete",
+  "request_id": "r15_delete",
+  "session_id": "my_session",
+  "payload": { "permanent": true }
+}
+```
+
+成功响应：
+
+```json
+{
+  "type": "response",
+  "request_id": "r15_delete",
+  "success": true,
+  "payload": { "session_id": "my_session", "deleted": true, "permanent": true }
 }
 ```
 
 ---
 
-### 4.17 `session.clear` — 清空上下文视图
+### 4.18 `session.clear` — 清空上下文视图
 
 **作用**: 清空当前 Active Context，不删除消息历史。
 
@@ -1129,7 +1262,7 @@ async def connect():
 
 ---
 
-### 4.18 `session.fork` — 分叉 Session
+### 4.19 `session.fork` — 分叉 Session
 
 **作用**: 将源 session 的全部数据（消息、上下文、seeds、runs、工具配置）复制到一个新 session。原 session 完全不受影响，新 session 可独立继续对话。
 
@@ -1200,7 +1333,7 @@ async def connect():
 
 ---
 
-### 4.19 `system.stats` — 系统统计
+### 4.20 `system.stats` — 系统统计
 
 **请求**:
 
@@ -1236,7 +1369,7 @@ async def connect():
 
 ---
 
-### 4.20 `runtime.sessions` — 查询运行中的 Session
+### 4.21 `runtime.sessions` — 查询运行中的 Session
 
 **请求**:
 
@@ -1269,7 +1402,7 @@ async def connect():
 
 ---
 
-### 4.21 `context.preview` — 预览上下文视图
+### 4.22 `context.preview` — 预览上下文视图
 
 **请求**:
 
@@ -1319,7 +1452,7 @@ async def connect():
 
 ---
 
-### 4.22 `context.reset` — 重置上下文规则
+### 4.23 `context.reset` — 重置上下文规则
 
 **请求**:
 
@@ -1336,7 +1469,7 @@ async def connect():
 
 ---
 
-### 4.23 `context.exclude` — 排除消息区间
+### 4.24 `context.exclude` — 排除消息区间
 
 **请求**:
 
@@ -1361,7 +1494,7 @@ async def connect():
 
 ---
 
-### 4.24 `context.include_after` — 从某消息后纳入上下文
+### 4.25 `context.include_after` — 从某消息后纳入上下文
 
 **请求**:
 
@@ -1380,7 +1513,7 @@ async def connect():
 
 ---
 
-### 4.25 `context.keep_recent` — 只保留最近 N 条
+### 4.26 `context.keep_recent` — 只保留最近 N 条
 
 **请求**:
 
@@ -1401,7 +1534,7 @@ async def connect():
 
 ---
 
-### 4.26 `context.seed.add` — 新增上下文 Seed
+### 4.27 `context.seed.add` — 新增上下文 Seed
 
 Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构建模型输入时位于普通 messages 之前，且不受 `include_after` / `keep_recent` 等消息裁剪规则影响。
 
@@ -1432,7 +1565,7 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
 
 ---
 
-### 4.27 `context.seed.set` — 按类型覆盖写入 Seed
+### 4.28 `context.seed.set` — 按类型覆盖写入 Seed
 
 适合写入“同类型只保留一份”的动态上下文，例如压缩摘要、用户偏好、世界状态。执行时会先删除当前 Session 中同 kind 的旧 seeds，再写入新 seed。
 
@@ -1456,7 +1589,7 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
 
 ---
 
-### 4.28 `context.seed.delete` — 删除指定 Seed
+### 4.29 `context.seed.delete` — 删除指定 Seed
 
 **请求**:
 
@@ -1479,7 +1612,7 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
 
 ---
 
-### 4.29 `context.seed.clear` — 清空 Seeds
+### 4.30 `context.seed.clear` — 清空 Seeds
 
 按 kind 清空；不传 kind 时清空当前 Session 的全部 seeds。
 
@@ -1504,7 +1637,7 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
 
 ---
 
-### 4.30 `events.pull` — 断线补拉事件
+### 4.31 `events.pull` — 断线补拉事件
 
 **请求**:
 
@@ -1538,7 +1671,7 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
 
 ---
 
-### 4.31 `events.subscribe` — 订阅实时事件
+### 4.32 `events.subscribe` — 订阅实时事件
 
 **请求**:
 
@@ -1574,7 +1707,7 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
 
 ---
 
-### 4.32 `run.cancel` — 中断运行
+### 4.33 `run.cancel` — 中断运行
 
 **请求**:
 
@@ -1627,6 +1760,9 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
 | `run.failed` | 推理失败（模型/供应商/运行时错误） | ✅ |
 | `session.created` | Session 创建 | - |
 | `session.closed` | Session 关闭 | - |
+| `session.archived` | Session 归档 | - |
+| `session.unarchived` | Session 恢复归档 | - |
+| `session.deleted` | Session 永久删除 | - |
 | `context.threshold.reached` | 上下文 token 达阈值 | - |
 | `context.reset` | 上下文重置 | - |
 | `context.updated` | 上下文规则更新 | - |

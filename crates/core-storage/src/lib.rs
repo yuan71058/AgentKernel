@@ -54,6 +54,11 @@ pub trait Storage: Send + Sync {
     async fn copy_session_data(&self, _src_session_id: &str, _dst_session_id: &str) -> Result<(), String> {
         Err("copy_session_data not implemented".to_string())
     }
+
+    // Session Delete：永久删除 session 持久化数据
+    async fn delete_session_data(&self, _session_id: &str) -> Result<(), String> {
+        Err("delete_session_data not implemented".to_string())
+    }
 }
 
 /// 文件存储（阶段性实现）
@@ -320,6 +325,15 @@ impl Storage for FileStorage {
 
         Ok(())
     }
+
+    async fn delete_session_data(&self, session_id: &str) -> Result<(), String> {
+        let dir = self.session_dir(session_id);
+        match tokio::fs::remove_dir_all(&dir).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
 }
 /// 内存存储（测试用）
 pub struct MemoryStorage {
@@ -434,6 +448,13 @@ impl Storage for MemoryStorage {
                 self.runs.write().unwrap().insert(dst_session_id.to_string(), cloned);
             }
         }
+        Ok(())
+    }
+
+    async fn delete_session_data(&self, session_id: &str) -> Result<(), String> {
+        self.sessions.write().unwrap().remove(session_id);
+        self.messages.write().unwrap().remove(session_id);
+        self.runs.write().unwrap().remove(session_id);
         Ok(())
     }
 }

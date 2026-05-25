@@ -245,7 +245,8 @@ python3 server.py
 - [ ] SQLite 主存储与多 client 权限边界
 - [ ] SDK 示例 (JS / Python / Go)
 
-**License:** MIT\
+**License:** MIT<br>
+**友情链接:** [LINUX DO](https://linux.do/)<br>
 **社区交流:** <br>
 QQ群 `250892941` <br>
 <a href="https://discord.gg/mcQtYDVjW"><img src="https://img.shields.io/badge/Discord-Join%20Us-7289DA?style=flat-square&logo=discord&logoColor=white" alt="Discord"></a>

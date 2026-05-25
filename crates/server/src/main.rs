@@ -13,7 +13,7 @@
 use core_protocol::*;
 use core_runtime::AgentKernel;
 use core_storage::FileStorage;
-use core_ws::server::{WsServer, WsToolRouter};
+use core_ws::server::{RollingCommLogger, WsServer, WsToolRouter};
 use std::sync::Arc;
 
 #[tokio::main]
@@ -78,6 +78,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let system_prompt = get_arg("--system-prompt", "你是一个有帮助的 AI 助手。");
     let data_dir = get_arg("--data-dir", ".aicore");
+    let comm_log_dir = get_arg("--comm-log-dir", &format!("{}/logs", data_dir));
+    let comm_log_max_bytes = get_arg("--comm-log-max-bytes", "10485760")
+        .parse::<u64>()
+        .unwrap_or(10 * 1024 * 1024);
+    let comm_log_keep_files = get_arg("--comm-log-keep-files", "10")
+        .parse::<usize>()
+        .unwrap_or(10);
 
     let config = ProviderConfig {
         protocol: protocol.clone(),
@@ -94,6 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("  地址:  {}", base_url);
     tracing::info!("  API:   {}", if config.api_key.is_empty() { "未设置（需通过 WS provider.update 配置）" } else { "已设置" });
     tracing::info!("  存储:  {}", data_dir);
+    tracing::info!("  通讯日志: {}/comm.jsonl（{} bytes × {}）", comm_log_dir, comm_log_max_bytes, comm_log_keep_files);
     tracing::info!("  监听:  ws://{}/ws", addr);
     tracing::info!("═══════════════════════════════════════════");
 
@@ -109,7 +117,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(s.with_tool_router(tool_router))
     };
 
-    let server = WsServer::new(scaffold);
+    let server = WsServer::new(scaffold).with_comm_logger(Arc::new(RollingCommLogger::new(
+        comm_log_dir,
+        comm_log_max_bytes,
+        comm_log_keep_files,
+    )));
     server.start(&addr).await?;
 
     Ok(())

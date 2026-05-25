@@ -23,7 +23,9 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, mpsc, oneshot, broadcast};
 use tracing::{info, warn, debug};
 
@@ -32,6 +34,107 @@ struct SessionToolSnapshotItem {
     tool: Tool,
     #[serde(default)]
     registration: Option<ToolRegistration>,
+}
+
+#[derive(Clone)]
+pub struct RollingCommLogger {
+    dir: Arc<PathBuf>,
+    max_bytes: u64,
+    keep_files: usize,
+    lock: Arc<Mutex<()>>,
+}
+
+impl RollingCommLogger {
+    pub fn new(dir: impl Into<PathBuf>, max_bytes: u64, keep_files: usize) -> Self {
+        Self {
+            dir: Arc::new(dir.into()),
+            max_bytes: max_bytes.max(1024 * 1024),
+            keep_files: keep_files.max(1),
+            lock: Arc::new(Mutex::new(())),
+        }
+    }
+
+    pub async fn write(&self, direction: &str, conn_id: &str, message: &WsMessage) {
+        let payload = match serde_json::to_value(message) {
+            Ok(v) => v,
+            Err(e) => json!({"serialization_error": e.to_string()}),
+        };
+        self.write_json(direction, conn_id, "", "", payload).await;
+    }
+
+    pub async fn write_raw(&self, direction: &str, conn_id: &str, command: &str, session_id: &str, raw: &str) {
+        let payload = serde_json::from_str::<serde_json::Value>(raw)
+            .unwrap_or_else(|_| json!({"raw": raw}));
+        self.write_json(direction, conn_id, command, session_id, payload).await;
+    }
+
+    pub async fn write_json(&self, direction: &str, conn_id: &str, command: &str, session_id: &str, payload: serde_json::Value) {
+        let _guard = self.lock.lock().await;
+        if let Err(e) = tokio::fs::create_dir_all(self.dir.as_ref()).await {
+            warn!(error = %e, path = %self.dir.display(), "create comm log dir failed");
+            return;
+        }
+        if let Err(e) = self.rotate_if_needed().await {
+            warn!(error = %e, "rotate comm log failed");
+        }
+        let record = json!({
+            "ts": chrono::Utc::now().to_rfc3339(),
+            "direction": direction,
+            "conn_id": conn_id,
+            "command": command,
+            "session_id": session_id,
+            "payload": payload,
+        });
+        let mut line = match serde_json::to_string(&record) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "serialize comm log record failed");
+                return;
+            }
+        };
+        line.push('\n');
+        let path = self.current_path();
+        match tokio::fs::OpenOptions::new().create(true).append(true).open(&path).await {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(line.as_bytes()).await {
+                    warn!(error = %e, path = %path.display(), "write comm log failed");
+                }
+            }
+            Err(e) => warn!(error = %e, path = %path.display(), "open comm log failed"),
+        }
+    }
+
+    fn current_path(&self) -> PathBuf {
+        self.dir.join("comm.jsonl")
+    }
+
+    async fn rotate_if_needed(&self) -> Result<(), String> {
+        let current = self.current_path();
+        let size = match tokio::fs::metadata(&current).await {
+            Ok(meta) => meta.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.to_string()),
+        };
+        if size < self.max_bytes {
+            return Ok(());
+        }
+
+        let oldest = self.dir.join(format!("comm.{}.jsonl", self.keep_files));
+        if tokio::fs::metadata(&oldest).await.is_ok() {
+            tokio::fs::remove_file(&oldest).await.map_err(|e| e.to_string())?;
+        }
+        for idx in (1..self.keep_files).rev() {
+            let src = self.dir.join(format!("comm.{}.jsonl", idx));
+            let dst = self.dir.join(format!("comm.{}.jsonl", idx + 1));
+            if tokio::fs::metadata(&src).await.is_ok() {
+                tokio::fs::rename(src, dst).await.map_err(|e| e.to_string())?;
+            }
+        }
+        tokio::fs::rename(current, self.dir.join("comm.1.jsonl"))
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 /// WS 工具路由器
@@ -141,20 +244,28 @@ impl ToolRouter for WsToolRouter {
 /// WS 服务器
 pub struct WsServer {
     pub scaffold: Arc<AgentKernel>,
+    pub comm_logger: Option<Arc<RollingCommLogger>>,
 }
 
 impl WsServer {
     pub fn new(scaffold: Arc<AgentKernel>) -> Self {
-        Self { scaffold }
+        Self { scaffold, comm_logger: None }
+    }
+
+    pub fn with_comm_logger(mut self, logger: Arc<RollingCommLogger>) -> Self {
+        self.comm_logger = Some(logger);
+        self
     }
 
     /// 构建 axum Router（不含绑定，供 Shuttle 等外部服务使用）
     pub fn router(&self) -> Router {
         let scaffold = self.scaffold.clone();
+        let comm_logger = self.comm_logger.clone();
         Router::new()
             .route("/ws", any(move |ws| {
                 let scaffold = scaffold.clone();
-                async move { handle_ws_upgrade(ws, scaffold).await }
+                let comm_logger = comm_logger.clone();
+                async move { handle_ws_upgrade(ws, scaffold, comm_logger).await }
             }))
     }
 
@@ -171,13 +282,30 @@ impl WsServer {
     }
 }
 
-async fn handle_ws_upgrade(ws: WebSocketUpgrade, scaffold: Arc<AgentKernel>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_connection(socket, scaffold))
+async fn handle_ws_upgrade(
+    ws: WebSocketUpgrade,
+    scaffold: Arc<AgentKernel>,
+    comm_logger: Option<Arc<RollingCommLogger>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_connection(socket, scaffold, comm_logger))
 }
 
-async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
+async fn handle_connection(
+    socket: WebSocket,
+    scaffold: Arc<AgentKernel>,
+    comm_logger: Option<Arc<RollingCommLogger>>,
+) {
     let conn_id = uuid::Uuid::new_v4().to_string();
     info!(conn_id = %conn_id, "client connected");
+
+    if let Some(logger) = &comm_logger {
+        logger.write("connection.open", &conn_id, &WsMessage::Stream {
+            session_id: String::new(),
+            run_id: String::new(),
+            event: "connection.open".into(),
+            data: json!({"conn_id": conn_id}),
+        }).await;
+    }
 
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let (tx, mut rx) = mpsc::channel::<WsMessage>(256);
@@ -191,6 +319,7 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
             "server_version": env!("CARGO_PKG_VERSION"),
             "commands": [
                 commands::SEND_MESSAGE,
+                commands::SESSION_RETRY,
                 commands::MESSAGE_INSERT,
                 commands::REGISTER_TOOL,
                 commands::UNREGISTER_TOOL,
@@ -200,6 +329,9 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
                 commands::RUNTIME_SESSIONS,
                 commands::GET_SESSION,
                 commands::SESSION_INFO,
+                commands::SESSION_CLOSE,
+                commands::SESSION_ARCHIVE,
+                commands::SESSION_UNARCHIVE,
                 commands::SESSION_DELETE,
                 commands::SESSION_CLEAR,
                 commands::SESSION_MESSAGES,
@@ -221,8 +353,13 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
     if tx.send(hello).await.is_err() { return; }
 
     // 发送任务：从 rx 读取 WsMessage 并发送到 WebSocket
+    let send_logger = comm_logger.clone();
+    let send_conn_id = conn_id.clone();
     let send_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
+            if let Some(logger) = &send_logger {
+                logger.write("server_to_client", &send_conn_id, &msg).await;
+            }
             if let Ok(text) = serde_json::to_string(&msg) {
                 if ws_sender.send(Message::Text(text.into())).await.is_err() {
                     break;
@@ -245,6 +382,9 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
         };
 
         debug!(conn_id = %conn_id, raw = %msg, "received message");
+        if let Some(logger) = &comm_logger {
+            logger.write_raw("client_to_server.raw", &conn_id, "", "", &msg).await;
+        }
 
         let parsed: serde_json::Value = match serde_json::from_str(&msg) {
             Ok(v) => v,
@@ -257,6 +397,9 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
         let payload = parsed.get("payload").cloned().unwrap_or(serde_json::Value::Null);
 
         info!(conn_id = %conn_id, command = %command, session_id = %session_id, request_id = %request_id, "dispatch command");
+        if let Some(logger) = &comm_logger {
+            logger.write_json("client_to_server", &conn_id, &command, &session_id, parsed.clone()).await;
+        }
 
         let tx_clone = tx.clone();
         let scaffold = scaffold.clone();
@@ -266,6 +409,13 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
                 let sid = session_id.clone();
                 let rid = request_id.clone();
                 tokio::spawn(handle_send_message(
+                    scaffold, tx_clone, sid, rid, payload,
+                ));
+            }
+            commands::SESSION_RETRY => {
+                let sid = session_id.clone();
+                let rid = request_id.clone();
+                tokio::spawn(handle_session_retry(
                     scaffold, tx_clone, sid, rid, payload,
                 ));
             }
@@ -348,8 +498,17 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
                 }
                 handle_session_info(&scaffold, &tx_clone, &session_id, &request_id).await;
             }
+            commands::SESSION_CLOSE => {
+                handle_session_close(&scaffold, &tx_clone, &session_id, &request_id).await;
+            }
+            commands::SESSION_ARCHIVE => {
+                handle_session_archive(&scaffold, &tx_clone, &session_id, &request_id).await;
+            }
+            commands::SESSION_UNARCHIVE => {
+                handle_session_unarchive(&scaffold, &tx_clone, &session_id, &request_id).await;
+            }
             commands::SESSION_DELETE => {
-                handle_session_delete(&scaffold, &tx_clone, &session_id, &request_id).await;
+                handle_session_delete(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
             }
             commands::SESSION_CLEAR => {
                 handle_session_clear(&scaffold, &tx_clone, &session_id, &request_id).await;
@@ -479,10 +638,50 @@ async fn handle_connection(socket: WebSocket, scaffold: Arc<AgentKernel>) {
     }
 
     send_task.abort();
+    if let Some(logger) = &comm_logger {
+        logger.write("connection.close", &conn_id, &WsMessage::Stream {
+            session_id: String::new(),
+            run_id: String::new(),
+            event: "connection.close".into(),
+            data: json!({"conn_id": conn_id}),
+        }).await;
+    }
     info!(conn_id = %conn_id, "client disconnected");
 }
 
 // ─── Command Handlers ──────────────────────────────────────────
+
+async fn forward_run_events(
+    scaffold: &Arc<AgentKernel>,
+    tx: &mpsc::Sender<WsMessage>,
+    session_id: &str,
+    run_id: &str,
+) -> tokio::task::JoinHandle<()> {
+    let mut event_rx = scaffold.subscribe_events();
+    let fwd_session = session_id.to_string();
+    let fwd_run = run_id.to_string();
+    let fwd_tx = tx.clone();
+
+    tokio::spawn(async move {
+        loop {
+            match event_rx.recv().await {
+                Ok(evt) => {
+                    // 只转发本次 session + run 的事件
+                    if evt.session_id != fwd_session { continue; }
+                    if !fwd_run.is_empty() && !evt.run_id.is_empty() && evt.run_id != fwd_run {
+                        continue;
+                    }
+                    // 转发所有事件（包括 TOOL_CALL_REQUEST，客户端 UI 需要展示）
+                    let _ = fwd_tx.send(WsMessage::Event(evt)).await;
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    warn!(skipped = n, "event bus lagged");
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    })
+}
 
 async fn handle_send_message(
     scaffold: Arc<AgentKernel>,
@@ -528,31 +727,7 @@ async fn handle_send_message(
     let run_id = format!("run_{}", uuid::Uuid::new_v4());
 
     // 订阅事件流（在 chat 启动前）
-    let mut event_rx = scaffold.subscribe_events();
-    let fwd_session = session_id.to_string();
-    let fwd_run = run_id.clone();
-    let fwd_tx = tx.clone();
-
-    // 事件转发任务：把 EventBus 中与本次 run 相关的事件实时推给 WS 客户端
-    let event_forwarder = tokio::spawn(async move {
-        loop {
-            match event_rx.recv().await {
-                Ok(evt) => {
-                    // 只转发本次 session + run 的事件
-                    if evt.session_id != fwd_session { continue; }
-                    if !fwd_run.is_empty() && !evt.run_id.is_empty() && evt.run_id != fwd_run {
-                        continue;
-                    }
-                    // 转发所有事件（包括 TOOL_CALL_REQUEST，客户端 UI 需要展示）
-                    let _ = fwd_tx.send(WsMessage::Event(evt)).await;
-                }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!(skipped = n, "event bus lagged");
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    });
+    let event_forwarder = forward_run_events(&scaffold, &tx, &session_id, &run_id).await;
 
     // 执行对话
     let opts = core_runtime::ChatOptions {
@@ -562,6 +737,7 @@ async fn handle_send_message(
         images,
         audio,
         max_repeated_tool_calls,
+        append_user_message: true,
     };
 
     let result = scaffold.chat_with_options(opts).await;
@@ -576,6 +752,58 @@ async fn handle_send_message(
                 "session_id": resp.session_id,
                 "run_id": resp.run_id,
                 "status": resp.status,
+                "partial_preserved": resp.partial_preserved,
+                "content": resp.content,
+                "usage": {
+                    "input_tokens": resp.usage.input_tokens,
+                    "output_tokens": resp.usage.output_tokens,
+                },
+                "traces": resp.traces.len(),
+                "tool_calls_made": resp.tool_calls_made,
+            })).await;
+        }
+        Err(e) => {
+            send_err_payload(&tx, &request_id, e.to_payload()).await;
+        }
+    }
+}
+
+async fn handle_session_retry(
+    scaffold: Arc<AgentKernel>,
+    tx: mpsc::Sender<WsMessage>,
+    session_id: String,
+    request_id: String,
+    payload: serde_json::Value,
+) {
+    let max_repeated_tool_calls = payload["max_repeated_tool_calls"].as_u64().unwrap_or(10) as u32;
+
+    if session_id.is_empty() {
+        send_err(&tx, &request_id, "session_id is required").await;
+        return;
+    }
+
+    if let Some(active_run_id) = scaffold.has_active_run_for_session(&session_id) {
+        send_err(&tx, &request_id, &format!(
+            "session '{}' already has an active run ({}), wait for it to complete or cancel it first",
+            session_id, active_run_id
+        )).await;
+        return;
+    }
+
+    let run_id = format!("run_{}", uuid::Uuid::new_v4());
+    let event_forwarder = forward_run_events(&scaffold, &tx, &session_id, &run_id).await;
+
+    let result = scaffold.retry_session(&session_id, &run_id, max_repeated_tool_calls).await;
+    tokio::task::yield_now().await;
+    event_forwarder.abort();
+
+    match result {
+        Ok(resp) => {
+            send_ok(&tx, &request_id, json!({
+                "session_id": resp.session_id,
+                "run_id": resp.run_id,
+                "status": resp.status,
+                "retried": true,
                 "partial_preserved": resp.partial_preserved,
                 "content": resp.content,
                 "usage": {
@@ -870,8 +1098,8 @@ async fn handle_session_info(
     })).await;
 }
 
-/// session.delete — 删除 session（清空 context + 移除 session 记录）
-async fn handle_session_delete(
+/// session.close — 关闭 session（卸载内存运行态，保留持久化历史）
+async fn handle_session_close(
     scaffold: &AgentKernel,
     tx: &mpsc::Sender<WsMessage>,
     session_id: &str,
@@ -882,17 +1110,102 @@ async fn handle_session_delete(
         return;
     }
 
-    // 清除上下文（消息仍保留在 storage，但不再可见）
     scaffold.context_mgr.remove_session(session_id);
-    // 移除 session 记录
-    let removed = scaffold.session_mgr.remove_session(session_id);
+    match scaffold.session_mgr.close_and_unload(session_id).await {
+        Ok(closed) => {
+            send_ok(tx, request_id, json!({
+                "session_id": session_id,
+                "closed": true,
+                "unloaded": closed,
+                "note": "session history preserved in storage",
+            })).await;
+            info!(session_id = %session_id, "session closed via ws");
+        }
+        Err(e) => send_err(tx, request_id, &e).await,
+    }
+}
 
-    send_ok(tx, request_id, json!({
-        "session_id": session_id,
-        "deleted": removed,
-    })).await;
+/// session.archive — 归档 session（保留历史，仅从默认列表隐藏）
+async fn handle_session_archive(
+    scaffold: &AgentKernel,
+    tx: &mpsc::Sender<WsMessage>,
+    session_id: &str,
+    request_id: &str,
+) {
+    if session_id.is_empty() {
+        send_err(tx, request_id, "session_id is required").await;
+        return;
+    }
 
-    info!(session_id = %session_id, "session deleted via ws");
+    match scaffold.session_mgr.archive(session_id).await {
+        Ok(session) => {
+            send_ok(tx, request_id, json!({
+                "session_id": session_id,
+                "archived": true,
+                "session": session,
+            })).await;
+            info!(session_id = %session_id, "session archived via ws");
+        }
+        Err(e) => send_err(tx, request_id, &e).await,
+    }
+}
+
+/// session.unarchive — 取消归档 session（恢复到普通列表，不自动启动）
+async fn handle_session_unarchive(
+    scaffold: &AgentKernel,
+    tx: &mpsc::Sender<WsMessage>,
+    session_id: &str,
+    request_id: &str,
+) {
+    if session_id.is_empty() {
+        send_err(tx, request_id, "session_id is required").await;
+        return;
+    }
+
+    match scaffold.session_mgr.unarchive(session_id).await {
+        Ok(session) => {
+            send_ok(tx, request_id, json!({
+                "session_id": session_id,
+                "unarchived": true,
+                "session": session,
+            })).await;
+            info!(session_id = %session_id, "session unarchived via ws");
+        }
+        Err(e) => send_err(tx, request_id, &e).await,
+    }
+}
+
+/// session.delete — 永久删除 session（删除持久化目录 + 内存索引）
+async fn handle_session_delete(
+    scaffold: &AgentKernel,
+    tx: &mpsc::Sender<WsMessage>,
+    session_id: &str,
+    request_id: &str,
+    payload: &serde_json::Value,
+) {
+    if session_id.is_empty() {
+        send_err(tx, request_id, "session_id is required").await;
+        return;
+    }
+
+    let permanent = payload["permanent"].as_bool().unwrap_or(false);
+    if !permanent {
+        send_err(tx, request_id, "session.delete is permanent; payload.permanent=true is required").await;
+        return;
+    }
+
+    scaffold.context_mgr.remove_session(session_id);
+    match scaffold.session_mgr.delete_permanently(session_id).await {
+        Ok(deleted) => {
+            send_ok(tx, request_id, json!({
+                "session_id": session_id,
+                "deleted": deleted,
+                "permanent": true,
+            })).await;
+            info!(session_id = %session_id, "session permanently deleted via ws");
+        }
+        Err(e) => send_err(tx, request_id, &e).await,
+    }
 }
 
 /// session.clear — 仅清空上下文视图（消息永久保留，符合规则）

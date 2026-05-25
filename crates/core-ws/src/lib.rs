@@ -52,9 +52,13 @@ pub mod commands {
 
     // ─── Session（session_id 非空时作用于该 session）──
     pub const SEND_MESSAGE: &str = "session.send";
+    pub const SESSION_RETRY: &str = "session.retry";
     pub const MESSAGE_INSERT: &str = "session.message.insert";
     pub const GET_SESSION: &str = "session.get";
     pub const SESSION_INFO: &str = "session.info";
+    pub const SESSION_CLOSE: &str = "session.close";
+    pub const SESSION_ARCHIVE: &str = "session.archive";
+    pub const SESSION_UNARCHIVE: &str = "session.unarchive";
     pub const SESSION_DELETE: &str = "session.delete";
     pub const SESSION_CLEAR: &str = "session.clear";
     pub const SESSION_MESSAGES: &str = "session.messages";

@@ -443,6 +443,7 @@ pub enum SessionStatus {
     Active,
     Paused,
     Closed,
+    Archived,
 }
 
 /// Run：一次完整推理流程

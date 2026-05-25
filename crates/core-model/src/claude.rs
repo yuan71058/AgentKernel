@@ -35,7 +35,7 @@ impl ProviderAdapter for ClaudeAdapter {
         for msg in &prepared.sanitized_messages {
             for block in &msg.content {
                 if let ContentBlock::Audio { .. } = block {
-                    return Err("Claude API 不支持音频输入（Audio）。请使用支持音频的供应商（如本地 llama-server）或先将音频转为文字。".to_string());
+                    return Err("Claude API 不支持音频输入（Audio）。".to_string());
                 }
             }
         }
@@ -112,7 +112,7 @@ impl ProviderAdapter for ClaudeAdapter {
         for msg in &prepared.sanitized_messages {
             for block in &msg.content {
                 if let ContentBlock::Audio { .. } = block {
-                    return Err("Claude API 不支持音频输入（Audio）。请使用支持音频的供应商（如本地 llama-server）或先将音频转为文字。".to_string());
+                    return Err("Claude API 不支持音频输入（Audio）。".to_string());
                 }
             }
         }

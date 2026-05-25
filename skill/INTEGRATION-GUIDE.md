@@ -17,6 +17,8 @@ session.list          ← 拿到所有 session 列表，渲染下拉选择器
 
 不需要等 Hello 返回再发，Hello 是自动推的，收到后直接发上面两条即可。
 
+**排查问题时**：优先看独立通讯日志 `.aicore/logs/comm.jsonl`。它记录业务端 ↔ AgentKernel 的 WS 原始命令、响应、事件，滚动保留历史文件 `comm.1.jsonl`、`comm.2.jsonl` 等，比只看 session 消息更完整。
+
 ---
 
 ## 二、首次使用（无历史 Session）
@@ -81,6 +83,7 @@ session.info              ← 比 session.get 更完整
 
 ```
 session.send              ← 发送用户消息
+session.retry             ← 上一轮失败/中断后基于现有历史续跑，不新增 user message
 ```
 
 **同时监听事件流**（这些是服务端主动推送的，不需要你请求）：
@@ -92,10 +95,12 @@ session.send              ← 发送用户消息
 | 思维过程 | `model.delta`（`payload.event_type="thinking"`）| 可选展示到"思考"区域 |
 | 模型完成 | `model.completed` | `payload.content` 是完整文本，可用于兜底 |
 | 推理失败 | `run.failed` | UI 标记失败，按 `session_id/run_id` 归属到对应会话 |
-| 最终响应 | `session.send` Response | `payload.content` 是最终文本 |
+| 最终响应 | `session.send` / `session.retry` Response | `payload.content` 是最终文本 |
 
 > **兜底逻辑**: 如果 `model.completed` 到了但聊天区还没内容，用它的 `payload.content` 兜底显示。
 > 这是因为极少数情况下 `model.delta` 可能没有触发（如超短回复）。
+>
+> **重试逻辑**: 如果上一轮失败时最后一条有效消息不是最终 `assistant` 输出，可以发 `session.retry`。它不会新增用户消息；若工具结果已经写入历史，会带着这些 tool result 继续请求模型。
 
 ---
 
@@ -230,10 +235,14 @@ Seed 是独立于消息历史的动态前置上下文块，默认不受消息裁
 | 开始新对话 | `session.send`（session 不存在会自动创建） |
 | 配置新 agent | `provider.update` → `system_prompt.set` → `tool.register` × N → `session.send` |
 | 停止生成 | `run.cancel` → 等 `run.cancelled` |
+| 失败续跑 | `session.retry`（不新增用户消息，复用已落盘 tool result） |
 | 查看工具列表 | `tool.list` |
 | 切换模型 | `provider.update` → `session.send` |
 | 清空上下文 | `context.reset`（不清历史）或 `session.clear` |
-| 删除 session | `session.delete` |
+| 关闭会话 | `session.close`（卸载运行态，保留历史） |
+| 归档会话 | `session.archive`（默认列表隐藏，历史保留） |
+| 查看归档 | `session.list` + `status: "archived"` |
+| 永久删除 session | `session.delete` + `permanent: true` |
 | 排除历史消息 | `context.exclude` → `session.send` |
 | 插入上下文消息 | `session.message.insert`（不触发推理，下次 `session.send` 自动进入上下文） |
 | 查看运行中的任务 | `runtime.sessions` |

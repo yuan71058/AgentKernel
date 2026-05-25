@@ -239,13 +239,62 @@ impl SessionManager {
 
     /// 关闭 Session
     pub async fn close(&self, session_id: &str) -> Result<(), String> {
-        if let Some(session) = self.sessions.write().unwrap().get_mut(session_id) {
-            session.status = SessionStatus::Closed;
-            session.updated_at = chrono::Utc::now();
+        let updated_session = {
+            let mut sessions = self.sessions.write().unwrap();
+            if let Some(session) = sessions.get_mut(session_id) {
+                session.status = SessionStatus::Closed;
+                session.updated_at = chrono::Utc::now();
+                Some(session.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(session) = updated_session {
             self.storage.save_session(&session).await?;
             self.event_bus.emit(core_protocol::EventEnvelope::new(SESSION_CLOSED, session_id));
         }
         Ok(())
+    }
+
+    /// 归档 Session（保留所有持久化数据，仅通过状态从默认列表隐藏）
+    pub async fn archive(&self, session_id: &str) -> Result<Session, String> {
+        let mut session = self.get_or_load_session(session_id).await?;
+        session.status = SessionStatus::Archived;
+        session.updated_at = chrono::Utc::now();
+        session.metadata.insert(
+            "archived_at".to_string(),
+            serde_json::Value::String(session.updated_at.to_rfc3339()),
+        );
+        self.storage.save_session(&session).await?;
+        self.sessions.write().unwrap().insert(session_id.to_string(), session.clone());
+        self.event_bus.emit(core_protocol::EventEnvelope::new(SESSION_ARCHIVED, session_id)
+            .with_payload(serde_json::json!({"archived_at": session.updated_at.to_rfc3339()})));
+        info!(session_id = %session_id, "session archived");
+        Ok(session)
+    }
+
+    /// 取消归档 Session（恢复为 closed，不自动启动运行）
+    pub async fn unarchive(&self, session_id: &str) -> Result<Session, String> {
+        let mut session = self.get_or_load_session(session_id).await?;
+        session.status = SessionStatus::Closed;
+        session.updated_at = chrono::Utc::now();
+        session.metadata.remove("archived_at");
+        self.storage.save_session(&session).await?;
+        self.sessions.write().unwrap().insert(session_id.to_string(), session.clone());
+        self.event_bus.emit(core_protocol::EventEnvelope::new(SESSION_UNARCHIVED, session_id));
+        info!(session_id = %session_id, "session unarchived");
+        Ok(session)
+    }
+
+    async fn get_or_load_session(&self, session_id: &str) -> Result<Session, String> {
+        if let Some(session) = self.sessions.read().unwrap().get(session_id).cloned() {
+            return Ok(session);
+        }
+        if let Some(session) = self.storage.get_session(session_id).await? {
+            self.sessions.write().unwrap().insert(session_id.to_string(), session.clone());
+            return Ok(session);
+        }
+        Err(format!("session '{}' not found", session_id))
     }
 
     /// Fork Session：将源 session 数据复制到新 session
@@ -326,9 +375,12 @@ impl SessionManager {
                 "active" => SessionStatus::Active,
                 "paused" => SessionStatus::Paused,
                 "closed" => SessionStatus::Closed,
+                "archived" => SessionStatus::Archived,
                 _ => return (Vec::new(), 0),
             };
             all.retain(|s| s.status == target);
+        } else {
+            all.retain(|s| s.status != SessionStatus::Archived);
         }
 
         all.sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -344,14 +396,40 @@ impl SessionManager {
         (paged, total)
     }
 
+    /// 关闭 Session（更新状态并从内存运行索引移除，storage 保留历史）
+    pub async fn close_and_unload(&self, session_id: &str) -> Result<bool, String> {
+        let mut session = self.get_or_load_session(session_id).await?;
+        session.status = SessionStatus::Closed;
+        session.updated_at = chrono::Utc::now();
+        self.storage.save_session(&session).await?;
+        let removed = self.sessions.write().unwrap().remove(session_id).is_some();
+        self.provider_overrides.write().unwrap().remove(session_id);
+        self.event_bus.emit(core_protocol::EventEnvelope::new(SESSION_CLOSED, session_id)
+            .with_payload(serde_json::json!({"reason": "closed"})));
+        info!(session_id = %session_id, "session closed and unloaded");
+        Ok(removed)
+    }
+
+    /// 永久删除 Session（删除持久化目录 + 内存索引）
+    pub async fn delete_permanently(&self, session_id: &str) -> Result<bool, String> {
+        let existed = self.sessions.write().unwrap().remove(session_id).is_some()
+            || self.storage.get_session(session_id).await?.is_some();
+        self.provider_overrides.write().unwrap().remove(session_id);
+        self.storage.delete_session_data(session_id).await?;
+        self.event_bus.emit(core_protocol::EventEnvelope::new(SESSION_DELETED, session_id)
+            .with_payload(serde_json::json!({"permanent": true})));
+        info!(session_id = %session_id, "session permanently deleted");
+        Ok(existed)
+    }
+
     /// 删除 Session（从内存中移除，storage 保留历史）
     pub fn remove_session(&self, session_id: &str) -> bool {
         let removed = self.sessions.write().unwrap().remove(session_id).is_some();
         self.provider_overrides.write().unwrap().remove(session_id);
         if removed {
             self.event_bus.emit(core_protocol::EventEnvelope::new(SESSION_CLOSED, session_id)
-                .with_payload(serde_json::json!({"reason": "deleted"})));
-            info!(session_id = %session_id, "session deleted");
+                .with_payload(serde_json::json!({"reason": "removed_from_runtime"})));
+            info!(session_id = %session_id, "session removed from runtime");
         }
         removed
     }

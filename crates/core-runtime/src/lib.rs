@@ -127,6 +127,7 @@ pub struct ChatOptions {
     pub images: Vec<String>,
     pub audio: Vec<AudioInput>,
     pub max_repeated_tool_calls: u32,
+    pub append_user_message: bool,
 }
 
 /// 音频输入
@@ -145,6 +146,7 @@ impl Default for ChatOptions {
             images: Vec::new(),
             audio: Vec::new(),
             max_repeated_tool_calls: DEFAULT_REPEATED_TOOL_CALL_LIMIT,
+            append_user_message: true,
         }
     }
 }
@@ -528,6 +530,12 @@ impl AgentKernel {
         if opts.session_id.is_empty() {
             return Err(RuntimeErrorReport::validation("chat.options", "session_id is required"));
         }
+        if !opts.append_user_message && (!opts.message.is_empty() || !opts.images.is_empty() || !opts.audio.is_empty()) {
+            return Err(RuntimeErrorReport::validation(
+                "chat.options",
+                "retry mode must not append message, images, or audio",
+            ));
+        }
         if opts.run_id.is_empty() {
             opts.run_id = format!("run_{}", uuid::Uuid::new_v4());
         }
@@ -591,30 +599,32 @@ impl AgentKernel {
             ));
         }
 
-        // 追加用户消息（含图片、音频）
-        let mut user_content = Vec::new();
-        for img_b64 in &opts.images {
-            // 前端传 base64 字符串，自动检测 media_type
-            let (media_type, data) = if img_b64.starts_with("data:") {
-                // data:image/png;base64,xxxxx 格式
-                let parts: Vec<&str> = img_b64.splitn(2, ',').collect();
-                let header = parts.first().unwrap_or(&"");
-                let raw = parts.get(1).unwrap_or(&"");
-                let mt = header.split(':').nth(1).unwrap_or("image/png").split(';').next().unwrap_or("image/png");
-                (mt.to_string(), raw.to_string())
-            } else {
-                ("image/png".to_string(), img_b64.clone())
-            };
-            user_content.push(ContentBlock::image(&media_type, &data));
+        // 首次发送时追加用户消息；重试时基于现有历史续跑，不新增 user message。
+        if opts.append_user_message {
+            let mut user_content = Vec::new();
+            for img_b64 in &opts.images {
+                // 前端传 base64 字符串，自动检测 media_type
+                let (media_type, data) = if img_b64.starts_with("data:") {
+                    // data:image/png;base64,xxxxx 格式
+                    let parts: Vec<&str> = img_b64.splitn(2, ',').collect();
+                    let header = parts.first().unwrap_or(&"");
+                    let raw = parts.get(1).unwrap_or(&"");
+                    let mt = header.split(':').nth(1).unwrap_or("image/png").split(';').next().unwrap_or("image/png");
+                    (mt.to_string(), raw.to_string())
+                } else {
+                    ("image/png".to_string(), img_b64.clone())
+                };
+                user_content.push(ContentBlock::image(&media_type, &data));
+            }
+            // 追加音频
+            for audio_input in &opts.audio {
+                user_content.push(ContentBlock::audio(&audio_input.format, &audio_input.data));
+            }
+            user_content.push(ContentBlock::text(&opts.message));
+            let user_msg = Message::new(&opts.session_id, Role::User, user_content);
+            self.context_mgr.add_message(&opts.session_id, user_msg.clone());
+            self.storage.save_message(&user_msg).await?;
         }
-        // 追加音频
-        for audio_input in &opts.audio {
-            user_content.push(ContentBlock::audio(&audio_input.format, &audio_input.data));
-        }
-        user_content.push(ContentBlock::text(&opts.message));
-        let user_msg = Message::new(&opts.session_id, Role::User, user_content);
-        self.context_mgr.add_message(&opts.session_id, user_msg.clone());
-        self.storage.save_message(&user_msg).await?;
 
         // 获取当前 session 可用工具：如果 session metadata 有工具快照，则按快照过滤；否则使用全局已注册工具
         self.restore_session_tools(&opts.session_id)?;
@@ -778,6 +788,17 @@ impl AgentKernel {
                 let text: String = resp.content.iter().filter_map(|c| {
                     if let ContentBlock::Text { text, .. } = c { Some(text.as_str()) } else { None }
                 }).collect();
+
+                if text.trim().is_empty() && resp.content.is_empty() {
+                    let report = RuntimeErrorReport::provider(
+                        "model.empty_response",
+                        "model returned an empty final response without text or tool_use; retry the run or check upstream provider output",
+                    );
+                    self.event_bus.emit(EventEnvelope::new(RUN_FAILED, &opts.session_id)
+                        .with_run_id(&opts.run_id)
+                        .with_payload(report.to_payload()));
+                    return Err(report);
+                }
 
                 self.event_bus.emit(EventEnvelope::new(MODEL_COMPLETED, &opts.session_id)
                     .with_run_id(&opts.run_id)
@@ -958,6 +979,59 @@ impl AgentKernel {
             self.storage.save_message(&tool_result_msg).await?;
             round = round.saturating_add(1);
         }
+    }
+
+    pub async fn retry_session(&self, session_id: &str, run_id: &str, max_repeated_tool_calls: u32) -> Result<ChatResponse, RuntimeErrorReport> {
+        if session_id.is_empty() {
+            return Err(RuntimeErrorReport::validation("session.retry", "session_id is required"));
+        }
+
+        self.load_session_state(session_id)
+            .await
+            .map_err(|e| RuntimeErrorReport::core("session.retry.load", e))?;
+
+        let messages = self.context_mgr.get_all_messages(session_id);
+        if messages.is_empty() {
+            return Err(RuntimeErrorReport::validation("session.retry", "session has no messages to retry"));
+        }
+
+        let mut last_non_empty: Option<&Message> = None;
+        for msg in messages.iter().rev() {
+            if msg.content.is_empty() {
+                continue;
+            }
+            last_non_empty = Some(msg);
+            break;
+        }
+
+        let Some(last_msg) = last_non_empty else {
+            return Err(RuntimeErrorReport::validation("session.retry", "session has no retryable messages"));
+        };
+
+        if last_msg.role == Role::Assistant && !last_msg.content.iter().any(|c| matches!(c, ContentBlock::ToolUse { .. })) {
+            return Err(RuntimeErrorReport::validation(
+                "session.retry",
+                "last message is already a final assistant response; retry is only allowed for unfinished/failed runs",
+            ));
+        }
+
+        // 如果最后停在 assistant tool_use，说明还有 pending tool call 没有回填结果，不能凭空续跑。
+        if last_msg.role == Role::Assistant && last_msg.content.iter().any(|c| matches!(c, ContentBlock::ToolUse { .. })) {
+            return Err(RuntimeErrorReport::validation(
+                "session.retry",
+                "last message contains pending tool_use without tool_result; wait for tool result or cancel the run first",
+            ));
+        }
+
+        self.chat_with_options(ChatOptions {
+            session_id: session_id.to_string(),
+            run_id: run_id.to_string(),
+            message: String::new(),
+            images: Vec::new(),
+            audio: Vec::new(),
+            max_repeated_tool_calls,
+            append_user_message: false,
+        }).await
     }
 
     /// 按需从存储层加载某个 session 的完整状态到内存

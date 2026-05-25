@@ -30,6 +30,18 @@ createApp({
       const found = sessions.value.find(s => s.session_id === sessionId.value);
       return found ? (found.title || found.session_id) : sessionId.value || '选择会话';
     });
+    const canRetrySession = computed(() => {
+      if (!connected.value || !sessionId.value) return false;
+      if (currentRunId.value && ['pending','running','streaming','cancelling'].includes(currentRunStatus.value)) return false;
+      for (let i = chatMessages.value.length - 1; i >= 0; i--) {
+        const m = chatMessages.value[i];
+        if (!m) continue;
+        if (m.role === 'tool') return true;
+        if (m.role === 'user') return true;
+        if (m.role === 'assistant') return !!(m.toolCalls && m.toolCalls.length > 0);
+      }
+      return false;
+    });
     // 点击外部关闭下拉
     if (typeof document !== 'undefined') {
       document.addEventListener('click', (e) => {
@@ -49,6 +61,8 @@ createApp({
     let _mediaRecorder = null;
     let _recordedChunks = [];
     const sessions = ref([]);
+    const archivedSessions = ref([]);
+    const showArchivedSessions = ref(false);
     const selectedSessionId = ref('');
     const events = ref([]);
     const rawMessages = ref([]);
@@ -428,6 +442,13 @@ createApp({
       return map[status] || status || '未知';
     }
 
+    function formatSize(str) {
+      if (str == null) return '0 B';
+      const bytes = new Blob([String(str)]).size;
+      if (bytes < 1024) return bytes + ' B';
+      return (bytes / 1024).toFixed(2) + ' KB';
+    }
+
     function switchMobileView(view) {
       mobileView.value = view;
       const rightPanel = document.querySelector('.right');
@@ -742,32 +763,42 @@ createApp({
 
           // session.list 响应 → 回填 session 下拉
           if (msg.success && respCmd === 'session.list' && Array.isArray(msg.payload?.sessions)) {
-            sessions.value = msg.payload.sessions.filter(item => item && typeof item === 'object' && item.session_id);
-            selectedSessionId.value = sessionId.value;
+            const list = msg.payload.sessions.filter(item => item && typeof item === 'object' && item.session_id);
+            if (msg.payload?.status === 'archived') {
+              archivedSessions.value = list;
+            } else {
+              sessions.value = list;
+              selectedSessionId.value = sessionId.value;
+            }
+          }
+          if (msg.success && respCmd === 'session.close') {
+            const closedSessionId = msg.payload?.session_id || respSessionId;
+            addLocalNotice('会话', `已关闭会话: ${closedSessionId}（历史已保留）`);
+            loadSessions();
+            loadRuntimeSessions();
+          }
+          if (msg.success && respCmd === 'session.archive') {
+            const archivedSessionId = msg.payload?.session_id || respSessionId;
+            removeSessionFromVisibleLists(archivedSessionId);
+            if (archivedSessionId === sessionId.value) switchToFirstAvailableSession();
+            addLocalNotice('会话', `已归档会话: ${archivedSessionId}`);
+            loadSessions();
+            if (showArchivedSessions.value) loadArchivedSessions();
+          }
+          if (msg.success && respCmd === 'session.unarchive') {
+            const unarchivedSessionId = msg.payload?.session_id || respSessionId;
+            archivedSessions.value = archivedSessions.value.filter(item => item.session_id !== unarchivedSessionId);
+            addLocalNotice('会话', `已恢复归档会话: ${unarchivedSessionId}`);
+            loadSessions();
+            if (showArchivedSessions.value) loadArchivedSessions();
           }
           if (msg.success && respCmd === 'session.delete') {
             const deletedSessionId = msg.payload?.session_id || respSessionId;
-            const remainingSessions = sessions.value.filter(item => item.session_id !== deletedSessionId);
-            sessions.value = remainingSessions;
-            selectedSessionId.value = deletedSessionId === sessionId.value
-              ? (remainingSessions[0]?.session_id || '')
-              : sessionId.value;
-            if (deletedSessionId === sessionId.value) {
-              if (remainingSessions.length > 0) {
-                selectSession(remainingSessions[0].session_id);
-                addLocalNotice('会话', `已删除 session: ${deletedSessionId}，已切换到 ${remainingSessions[0].session_id}`);
-              } else {
-                const newId = 'session_' + Math.random().toString(36).substring(2, 8);
-                sessionId.value = newId;
-                selectedSessionId.value = newId;
-                resetSessionViewState();
-                sessions.value = [{ session_id: newId, title: '新会话', message_count: 0 }];
-                addLocalNotice('会话', `已删除 session: ${deletedSessionId}，已切换到新会话: ${newId}`);
-              }
-            } else {
-              addLocalNotice('会话', `已删除 session: ${deletedSessionId}`);
-            }
+            removeSessionFromVisibleLists(deletedSessionId);
+            if (deletedSessionId === sessionId.value) switchToFirstAvailableSession();
+            addLocalNotice('会话', `已永久删除会话: ${deletedSessionId}`);
             loadSessions();
+            if (showArchivedSessions.value) loadArchivedSessions();
           }
 
           // session.fork 响应 → 刷新 session 列表并切换到新 session
@@ -780,10 +811,13 @@ createApp({
             }
           }
 
-          // session.send 响应 → 如果 model.completed 还没来，用 response payload 兜底显示
-          if (msg.success && respCmd === 'session.send' && msg.payload?.run_id && isCurrentSession(respSessionId)) {
+          // session.send / session.retry 响应 → 如果 model.completed 还没来，用 response payload 兜底显示
+          if (msg.success && (respCmd === 'session.send' || respCmd === 'session.retry') && msg.payload?.run_id && isCurrentSession(respSessionId)) {
             currentRunId.value = msg.payload.run_id;
             currentRunStatus.value = msg.payload.status || currentRunStatus.value;
+            if (respCmd === 'session.retry') {
+              addLocalNotice('重试', `已完成重试: ${msg.payload.run_id}`);
+            }
           }
           if (msg.success && msg.payload?.status === 'cancelled' && isCurrentSession(respSessionId)) {
             currentRunStatus.value = 'cancelled';
@@ -865,6 +899,7 @@ createApp({
                     role: 'assistant',
                     text: textContent,
                     meta,
+                    _toolChainExpanded: false,
                     toolCalls: toolUses.map(tu => ({
                       id: tu.id, name: tu.name, input: tu.input || {},
                       result: null, isError: false, status: 'pending',
@@ -988,6 +1023,43 @@ createApp({
       addRawMessage('out', out);
     }
 
+    function loadArchivedSessions() {
+      if (!ws) return;
+      const rid = nextReqId();
+      const msg = {
+        command: 'session.list',
+        request_id: rid,
+        session_id: '',
+        payload: { page: 0, limit: 100, status: 'archived' },
+      };
+      const out = JSON.stringify(msg);
+      ws.send(out);
+      addRawMessage('out', out);
+    }
+
+    function toggleArchivedSessions() {
+      showArchivedSessions.value = !showArchivedSessions.value;
+      if (showArchivedSessions.value) loadArchivedSessions();
+    }
+
+    function removeSessionFromVisibleLists(id) {
+      sessions.value = sessions.value.filter(item => item.session_id !== id);
+      archivedSessions.value = archivedSessions.value.filter(item => item.session_id !== id);
+      selectedSessionId.value = sessionId.value;
+    }
+
+    function switchToFirstAvailableSession() {
+      if (sessions.value.length > 0) {
+        selectSession(sessions.value[0].session_id);
+        return;
+      }
+      const newId = 'session_' + Math.random().toString(36).substring(2, 8);
+      sessionId.value = newId;
+      selectedSessionId.value = newId;
+      resetSessionViewState();
+      sessions.value = [{ session_id: newId, title: '新会话', message_count: 0 }];
+    }
+
     function resetSessionViewState() {
       chatMessages.value = [];
       streamingText.value = '';
@@ -1016,18 +1088,46 @@ createApp({
       selectSession(newId);
     }
 
+    function closeSession(id) {
+      if (!ws || !id) return;
+      if (runtimeSessions.value.includes(id)) {
+        addLocalNotice('会话', `session ${id} 当前仍有运行中的任务，暂不允许关闭`);
+        return;
+      }
+      sendCommand('session.close', {}, id);
+    }
+
+    function archiveSession(id) {
+      if (!ws || !id) return;
+      if (runtimeSessions.value.includes(id)) {
+        addLocalNotice('会话', `session ${id} 当前仍有运行中的任务，暂不允许归档`);
+        return;
+      }
+      const target = sessions.value.find(s => s.session_id === id) || archivedSessions.value.find(s => s.session_id === id);
+      const title = target?.title || id;
+      if (!window.confirm(`确认归档会话 "${title}" 吗？\n\n归档只会从默认列表隐藏，历史文件会完整保留。`)) {
+        return;
+      }
+      sendCommand('session.archive', {}, id);
+    }
+
+    function unarchiveSession(id) {
+      if (!ws || !id) return;
+      sendCommand('session.unarchive', {}, id);
+    }
+
     function deleteSession(id) {
       if (!ws || !id) return;
       if (runtimeSessions.value.includes(id)) {
-        addLocalNotice('会话', `session ${id} 当前仍有运行中的任务，暂不允许删除`);
+        addLocalNotice('会话', `session ${id} 当前仍有运行中的任务，暂不允许永久删除`);
         return;
       }
-      const target = sessions.value.find(s => s.session_id === id);
+      const target = sessions.value.find(s => s.session_id === id) || archivedSessions.value.find(s => s.session_id === id);
       const title = target?.title || id;
-      if (!window.confirm(`确认删除 session "${title}" 吗？\n\n注意：这会移除该 session 索引与当前上下文视图。`)) {
+      if (!window.confirm(`确认永久删除会话 "${title}" 吗？\n\n这会删除 .aicore/sessions 下的完整历史目录，不能恢复。`)) {
         return;
       }
-      sendCommand('session.delete', {}, id);
+      sendCommand('session.delete', { permanent: true }, id);
     }
 
     function forkSession(srcId) {
@@ -1406,6 +1506,17 @@ createApp({
       pendingAudio.value = [];
     }
 
+    function retrySession() {
+      if (!ws || !sessionId.value || !canRetrySession.value) return;
+      currentRunId.value = '';
+      currentRunStatus.value = 'pending';
+      streamingText.value = '';
+      streamingThinking.value = '';
+      isStreaming.value = false;
+      sendCommand('session.retry', { max_repeated_tool_calls: 10 }, sessionId.value);
+      addLocalNotice('重试', '已发送 session.retry，将基于现有消息历史续跑');
+    }
+
     function insertChatMessage(role) {
       if (!ws || !chatInput.value.trim()) return;
       const text = chatInput.value.trim();
@@ -1740,6 +1851,30 @@ createApp({
         flushStreaming();
       }
 
+      let pendingTc = null;
+      if (belongsToCurrentSession) {
+        let lastMsg = chatMessages.value[chatMessages.value.length - 1];
+        if (!lastMsg || lastMsg.role !== 'assistant') {
+           lastMsg = { role: 'assistant', text: '', _toolChainExpanded: true, toolCalls: [] };
+           chatMessages.value.push(lastMsg);
+        }
+        if (!lastMsg.toolCalls) {
+           lastMsg.toolCalls = [];
+        }
+        lastMsg._toolChainExpanded = true;
+
+        pendingTc = {
+          id: call_id,
+          name: tool_name,
+          input: safeInput,
+          result: null,
+          isError: false,
+          status: 'pending'
+        };
+        lastMsg.toolCalls.push(pendingTc);
+        scrollToChat();
+      }
+
       let execResult;
       if (!tool) {
         execResult = { ok: false, result: `tool '${tool_name}' not found in client registry` };
@@ -1758,14 +1893,11 @@ createApp({
       }
 
       const elapsed = Date.now() - startTime;
-      if (belongsToCurrentSession) {
-        chatMessages.value.push({
-          role: 'system',
-          text: tool
-            ? `🔧 ${tool_name}(${JSON.stringify(safeInput)})\n→ ${execResult.result} [${elapsed}ms]`
-            : `⚠️ 未知工具: ${tool_name}\n输入: ${JSON.stringify(safeInput)}`,
-          meta: `call_id: ${call_id}`
-        });
+      if (belongsToCurrentSession && pendingTc) {
+        pendingTc.result = execResult.result;
+        pendingTc.isError = !execResult.ok;
+        pendingTc.status = execResult.ok ? 'done' : 'error';
+        pendingTc.elapsed = elapsed;
 
         toolExecLog.value.push({
           time: now(), tool: tool_name, input: JSON.stringify(safeInput),
@@ -1901,6 +2033,9 @@ createApp({
         'tool_chain.diagnosed': '上下文工具链检查',
         'session.created': '会话创建',
         'session.closed': '会话关闭',
+        'session.archived': '会话归档',
+        'session.unarchived': '会话恢复',
+        'session.deleted': '会话永久删除',
         'run.started': '推理任务开始',
         'run.cancelled': '推理任务中断',
         'run.completed': '推理任务结束',
@@ -2050,10 +2185,14 @@ createApp({
             'provider.update': '更新供应商响应',
             'provider.get': '获取供应商响应',
             'session.send': '发送消息命令完成',
+            'session.retry': '重试会话响应',
             'session.messages': '消息历史响应',
             'session.get': '获取会话响应',
             'session.info': '会话详情响应',
-            'session.delete': '删除会话响应',
+            'session.close': '关闭会话响应',
+            'session.archive': '归档会话响应',
+            'session.unarchive': '恢复归档响应',
+            'session.delete': '永久删除会话响应',
             'session.clear': '清空上下文响应',
             'session.fork': '分叉会话响应',
             'session.list': '会话列表响应',
@@ -2124,6 +2263,9 @@ createApp({
             'tool_chain.diagnosed':     () => ({ label: '上下文工具链检查', brief: `${tag(toolChainStatusText(p.report), toolChainIssueCount(p.report) > 0 ? 'err' : '')} 完整闭环 ${tag((p.report?.complete_tool_call_ids||[]).length)} 个，丢弃 ${tag(toolChainIssueCount(p.report))} 个` }),
             'session.created':          () => ({ label: '会话创建', brief: `标题 ${tag(p.title||'—')}` }),
             'session.closed':           () => ({ label: '会话关闭', brief: p.reason ? `原因 ${tag(p.reason)}` : '' }),
+            'session.archived':         () => ({ label: '会话归档', brief: '已从默认列表隐藏' }),
+            'session.unarchived':       () => ({ label: '会话恢复', brief: '已恢复到普通列表' }),
+            'session.deleted':          () => ({ label: '会话永久删除', brief: '持久化目录已删除' }),
             'run.started':              () => ({ label: '推理任务开始', brief: `使用 ${tag(p.provider)} / ${tag(p.model)}` }),
             'run.cancelled':            () => ({ label: '推理任务中断', brief: `${p.preserved ? tag('已保留部分输出') : tag('未保留输出')} ${tag(p.duration_ms ? p.duration_ms + 'ms' : '—')}` }),
             'run.completed':            () => ({ label: '推理任务结束', brief: `本轮耗时 ${tag(p.duration_ms?p.duration_ms+'ms':'—')}` }),
@@ -2158,10 +2300,14 @@ createApp({
       const p = msg.payload || {};
       const cmdMap = {
         'session.send':         () => ({ label: '发送消息', brief: `${sid} ${tag(JSON.stringify(p.message||'').slice(0,50))}` }),
+        'session.retry':        () => ({ label: '重试会话', brief: `${sid} 基于现有历史续跑` }),
         'session.messages':     () => ({ label: '获取消息历史', brief: `${sid} 页${p.page||0} 每页${p.limit||50}` }),
         'session.get':          () => ({ label: '获取会话', brief: sid }),
         'session.info':         () => ({ label: '会话详情', brief: sid }),
-        'session.delete':       () => ({ label: '删除会话', brief: sid }),
+        'session.close':       () => ({ label: '关闭会话', brief: sid }),
+        'session.archive':     () => ({ label: '归档会话', brief: sid }),
+        'session.unarchive':   () => ({ label: '恢复归档', brief: sid }),
+        'session.delete':      () => ({ label: '永久删除会话', brief: sid }),
         'session.clear':        () => ({ label: '清空上下文', brief: sid }),
         'session.list':         () => ({ label: '列出会话', brief: `页${p.page||0} 每页${p.limit||20}` }),
         'provider.update':      () => ({ label: '更新供应商', brief: `${sid} ${tag(p.protocol)} ${tag(p.model)}` }),
@@ -2317,8 +2463,9 @@ createApp({
     return {
       wsUrl, connected, connectionId, sessionId,
       wsDropdownOpen, wsCustomMode, wsPresets, wsSelectLabel, selectWsPreset,
-      selectedSessionId, sessions,
+      selectedSessionId, sessions, archivedSessions, showArchivedSessions,
       chatInput, chatMessages, pendingImages, pendingAudio, isRecording,
+      canRetrySession,
       fullMessages, fullMessagesPage, fullMessagesTotal, fullMessagesHasMore, fullMessagesLoading,
       runtimeSessions, runtimeRuns, runtimeRuntimeStatus, runtimeLoading,
       events, rawMessages, tools, toolExecLog, presetTools,
@@ -2331,9 +2478,12 @@ createApp({
       streamingText, isStreaming, currentRunId, currentRunStatus, runStatusLabel, autoReconnect,
       streamingThinking,
       latestToolChainReport, latestTraceDetails, formatToolChainIds, toolChainStatusText, toolChainIssueCount,
-      connect, disconnect, sendChat, insertChatMessage, cancelCurrentRun, sendRaw, sendToolResult,
+      connect, disconnect, sendChat, retrySession, insertChatMessage, cancelCurrentRun, sendRaw, sendToolResult,
       defineClientTool, handleToolCallRequest,
-      loadSessions, selectSession, createNewSession, deleteSession, forkSession,
+      loadSessions,
+      loadArchivedSessions,
+      toggleArchivedSessions,
+      selectSession, createNewSession, closeSession, archiveSession, unarchiveSession, deleteSession, forkSession,
       registerPresetTool, registerPresetTools,
       saveProvider, loadProvider, applyTemplate,
       saveSystemPrompt, loadSystemPrompt, loadTools,
@@ -2346,7 +2496,7 @@ createApp({
       showApiKey, formatTimeoutLabel, askUserQuestionState,
       addImageFiles, removePendingImage, clearPendingImages, handlePaste, handleFileSelect, triggerFileSelect,
       addAudioFiles, removePendingAudio, clearPendingAudio, triggerAudioFileSelect, handleAudioFileSelect, toggleRecording, formatDuration,
-      mobileView, switchMobileView, mobileSessionOpen, mobileMoreOpen, currentSessionTitle,
+      mobileView, switchMobileView, mobileSessionOpen, mobileMoreOpen, currentSessionTitle, formatSize,
     };
   }
 }).mount('#app');
