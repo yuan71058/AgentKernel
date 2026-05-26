@@ -396,30 +396,45 @@
               <div class="config-title">当前激活上下文 <span>模型本轮实际可见的消息范围</span></div>
               <div class="config-actions">
                 <button class="btn btn-connect" @click="loadContextPreview" :disabled="!connected">刷新预览</button>
-                <button class="btn" @click="resetContext" :disabled="!connected">重置全量</button>
-                <button class="btn" @click="keepRecentContext" :disabled="!connected">仅保留最近N条</button>
+                <button class="btn" @click="setTrimNone" :disabled="!connected">关闭裁剪</button>
               </div>
               <div class="config-row-group" style="margin-top:16px">
                 <div class="config-row">
-                  <label>最近保留消息数</label>
-                  <input class="config-input" v-model.number="contextKeepRecent" type="number" placeholder="20">
+                  <label>裁剪模式</label>
+                  <select class="config-input" v-model="contextTrimMode">
+                    <option value="checkpoint">自动阶梯裁剪</option>
+                    <option value="keep_recent_messages">只保留最近 N 条消息</option>
+                    <option value="include_after">从指定消息后开始</option>
+                    <option value="none">不裁剪</option>
+                  </select>
                 </div>
+                <template v-if="contextTrimMode === 'checkpoint'">
+                  <div class="config-row">
+                    <label>触发消息数</label>
+                    <input class="config-input" v-model.number="contextTriggerMaxMessages" type="number" placeholder="300">
+                  </div>
+                  <div class="config-row">
+                    <label>保留最近轮数</label>
+                    <input class="config-input" v-model.number="contextRetainTurns" type="number" placeholder="20">
+                  </div>
+                </template>
+                <template v-if="contextTrimMode === 'keep_recent_messages'">
+                  <div class="config-row">
+                    <label>最近保留消息数</label>
+                    <input class="config-input" v-model.number="contextKeepMessages" type="number" placeholder="50">
+                  </div>
+                </template>
+                <template v-if="contextTrimMode === 'include_after'">
+                  <div class="config-row">
+                    <label>从某条消息后开始</label>
+                    <input class="config-input" v-model="contextIncludeAfter" placeholder="msg_xxx">
+                  </div>
+                </template>
               </div>
               <div class="config-actions" style="margin-top:8px">
-                <button class="btn" @click="keepRecentContext" :disabled="!connected">应用最近N条</button>
+                <button class="btn" @click="setContextTrim" :disabled="!connected">应用裁剪策略</button>
               </div>
-              <div class="config-hint">只限制模型最多看到最近 N 条消息；不需要填写消息 ID。</div>
-
-              <div class="config-row-group" style="margin-top:16px">
-                <div class="config-row">
-                  <label>从某条消息后开始</label>
-                  <input class="config-input" v-model="contextIncludeAfter" placeholder="msg_xxx">
-                </div>
-              </div>
-              <div class="config-actions" style="margin-top:8px">
-                <button class="btn" @click="includeAfterContext" :disabled="!connected || !contextIncludeAfter.trim()">应用消息起点</button>
-              </div>
-              <div class="config-hint">只设置消息裁剪起点：模型只看该消息之后的历史。</div>
+              <div class="config-hint">主裁剪策略同一时间只生效一种：按上下文消息数触发，按对话轮次保留；工具链运行中不会触发自动裁剪。</div>
               <div class="stats-panel" style="margin-top:16px" v-if="contextPreview.active_context">
                 <div class="stat-row"><span class="stat-label">上下文 ID</span><span class="stat-value" style="font-size:11px">{{ contextPreview.active_context.context_id }}</span></div>
                 <div class="stat-row"><span class="stat-label">上下文模式</span><span class="stat-value">{{ contextModeLabel(contextPreview.active_context.mode) }}</span></div>
@@ -466,6 +481,7 @@
 
             <div class="config-section">
               <div class="config-title">当前可见消息</div>
+              <div class="config-hint">按 `role + content[].type` 区分消息块；工具链请按 run_id 与 tool_use_id 聚合，完整规则见 skill/INTEGRATION-GUIDE.md。</div>
               <template v-if="!contextPreview.messages || contextPreview.messages.length===0">
                 <div style="color:var(--text3);font-size:12px;padding:12px 0;text-align:center">暂无当前上下文预览</div>
               </template>
@@ -634,60 +650,32 @@
             </div>
           </div>
           <div class="session-list">
-            <div class="session-item" v-for="s in (showArchivedSessions ? archivedSessions : sessions)" :key="s.session_id" :class="{active: s.session_id === sessionId}" @click="selectSession(s.session_id)">
-              <div class="session-item-title" style="display:flex;align-items:center;gap:6px;justify-content:space-between">
+            <div class="session-item" v-for="s in (showArchivedSessions ? archivedSessions : sessions)" :key="s.session_id" :class="{active: s.session_id === sessionId, running: runtimeSessions.includes(s.session_id)}" @click="selectSession(s.session_id)">
+              <div class="session-item-title" style="display:flex;align-items:center;gap:6px;justify-content:space-between;position:relative">
                 <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
                   {{ s.title || s.session_id }}
                   <span v-if="runtimeSessions.includes(s.session_id)" class="tool-tag" style="color:var(--orange); border-color:var(--orange); font-size:10px; padding:0 4px; margin-left:6px; vertical-align:middle; background:transparent;">处理中</span>
                 </span>
-                <button
-                  v-if="!showArchivedSessions"
-                  class="btn"
-                  @click.stop="closeSession(s.session_id)"
-                  :disabled="!connected || runtimeSessions.includes(s.session_id)"
-                  style="padding:2px 6px;font-size:10px;line-height:1.2"
-                  title="关闭会话：卸载运行态，保留历史"
-                >
-                  关
-                </button>
-                <button
-                  v-if="!showArchivedSessions"
-                  class="btn"
-                  @click.stop="archiveSession(s.session_id)"
-                  :disabled="!connected || runtimeSessions.includes(s.session_id)"
-                  style="padding:2px 6px;font-size:10px;line-height:1.2;color:var(--orange)"
-                  title="归档会话：保留历史并从默认列表隐藏"
-                >
-                  归
-                </button>
-                <button
-                  v-if="showArchivedSessions"
-                  class="btn"
-                  @click.stop="unarchiveSession(s.session_id)"
-                  :disabled="!connected"
-                  style="padding:2px 6px;font-size:10px;line-height:1.2;color:var(--green)"
-                  title="恢复归档会话"
-                >
-                  恢
-                </button>
-                <button
-                  class="btn"
-                  @click.stop="deleteSession(s.session_id)"
-                  :disabled="!connected || runtimeSessions.includes(s.session_id)"
-                  style="padding:2px 6px;font-size:10px;line-height:1.2;color:var(--red)"
-                  title="永久删除会话历史"
-                >
-                  永删
-                </button>
-                <button
-                  class="btn"
-                  @click.stop="forkSession(s.session_id)"
-                  :disabled="!connected"
-                  style="padding:2px 6px;font-size:10px;line-height:1.2;color:var(--blue)"
-                  title="分叉 session"
-                >
-                  叉
-                </button>
+                <div style="display:flex;align-items:center;gap:4px">
+                  <button class="btn btn-session-menu" @click.stop="activeSessionMenu = activeSessionMenu === s.session_id ? null : s.session_id" style="padding:2px 4px;font-size:10px;line-height:1.2;background:transparent;border:none;box-shadow:none;color:var(--text3)" title="更多操作">
+                    <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="1"></circle><circle cx="12" cy="5" r="1"></circle><circle cx="12" cy="19" r="1"></circle></svg>
+                  </button>
+                  <button
+                    class="btn"
+                    @click.stop="deleteSession(s.session_id)"
+                    :disabled="!connected || runtimeSessions.includes(s.session_id)"
+                    style="padding:2px 6px;font-size:10px;line-height:1.2;color:var(--red)"
+                    title="永久删除会话历史"
+                  >
+                    删
+                  </button>
+                </div>
+                <div v-if="activeSessionMenu === s.session_id" class="session-action-menu" @click.stop>
+                  <div class="session-action-item" v-if="!showArchivedSessions" @click="closeSession(s.session_id); activeSessionMenu=null" :class="{disabled: !connected || runtimeSessions.includes(s.session_id)}">关闭会话</div>
+                  <div class="session-action-item" v-if="!showArchivedSessions" @click="archiveSession(s.session_id); activeSessionMenu=null" :class="{disabled: !connected || runtimeSessions.includes(s.session_id)}">归档会话</div>
+                  <div class="session-action-item" v-if="showArchivedSessions" @click="unarchiveSession(s.session_id); activeSessionMenu=null" :class="{disabled: !connected}">恢复会话</div>
+                  <div class="session-action-item" @click="forkSession(s.session_id); activeSessionMenu=null" :class="{disabled: !connected}">分叉会话</div>
+                </div>
               </div>
               <div class="session-item-meta">
                 <span style="font-family:ui-monospace,monospace">{{ (s.session_id).slice(0,8) }}</span>
@@ -779,7 +767,8 @@
                       <div class="tool-chain-header" @click="m._toolChainExpanded = !m._toolChainExpanded">
                         <div class="tool-chain-title">
                           <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>
-                          <span>已调用 {{ m.toolCalls.length }} 个工具</span>
+                          <span>{{ toolChainSummary(m.toolCalls) }}</span>
+                          <span v-if="m.runId" class="raw-tag" style="font-size:10px">{{ m.runId.slice(0, 12) }}</span>
                         </div>
                         <svg class="tool-chain-arrow icon-sm" :class="{'is-expanded': m._toolChainExpanded}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
                       </div>
@@ -792,9 +781,9 @@
                             <span v-else-if="tc.status==='error'" class="tool-call-status error">❌ 失败</span>
                             <span v-if="tc.result !== null" class="tool-call-size">{{ formatSize(tc.result) }}</span>
                           </div>
-                          <div v-if="tc.input && Object.keys(tc.input).length > 0" class="tool-call-section">
-                            <div class="tool-call-section-title" onclick="this.classList.toggle('open'); this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">输入参数</div>
-                            <pre class="tool-call-pre" style="display:none">{{ JSON.stringify(tc.input, null, 2) }}</pre>
+                          <div class="tool-call-section">
+                            <div class="tool-call-section-title open" onclick="this.classList.toggle('open'); this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">输入参数</div>
+                            <pre class="tool-call-pre">{{ tc.input && Object.keys(tc.input).length > 0 ? JSON.stringify(tc.input, null, 2) : '（无入参）' }}</pre>
                           </div>
                           <div v-if="tc.result !== null" class="tool-call-section">
                             <div class="tool-call-section-title" onclick="this.classList.toggle('open'); this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">返回结果</div>
@@ -870,7 +859,7 @@
               <button class="btn btn-desktop-only" @click="toggleRecording" :disabled="!connected" :title="isRecording ? '停止录音' : '开始录音'" style="padding:6px 8px;flex-shrink:0;font-size:12px" :style="isRecording ? 'color:var(--red);animation:pulse 1s infinite' : ''">
                 <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="6" :fill="isRecording ? 'var(--red)' : 'none'"></circle></svg>
               </button>
-              <button class="btn btn-more" @click="mobileMoreOpen = !mobileMoreOpen" :disabled="!connected" title="更多功能" style="padding:6px 8px;flex-shrink:0;font-size:12px" :style="mobileMoreOpen ? 'color:var(--blue)' : ''">
+              <button class="btn btn-more" @click="mobileMoreOpen = !mobileMoreOpen" :disabled="!connected" title="更多功能" style="padding:6px 8px;flex-shrink:0;font-size:12px;height: 40px;width: 40px;;" :style="mobileMoreOpen ? 'color:var(--blue)' : ''">
                 <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
               </button>
               <input v-model="chatInput" placeholder="输入消息... (Enter 发送)" @keyup.enter="sendChat" @paste="handlePaste" :disabled="!connected">

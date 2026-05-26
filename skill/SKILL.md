@@ -99,3 +99,5 @@ git clone https://github.com/cih1996/AgentKernel.git && cd AgentKernel && cargo 
 |------|------|
 | 接入思路和命令搭配 | [INTEGRATION-GUIDE.md](./INTEGRATION-GUIDE.md) |
 | 命令参数、返回结构、事件 payload | [API.md](./API.md) |
+| 上下文压缩工作流 | [压缩上下文技巧.md](./压缩上下文技巧.md) |
+| 聊天消息展示与工具链聚合 | [消息显示与工具链聚合技巧.md](./消息显示与工具链聚合技巧.md) |

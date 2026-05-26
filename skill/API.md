@@ -219,7 +219,6 @@ async def connect():
       "session.archive",
       "session.unarchive",
       "session.delete",
-      "session.clear",
       "session.fork",
       "session.messages",
       "session.list",
@@ -1090,7 +1089,8 @@ async def connect():
   "session_id": "my_session",
   "payload": {
     "page": 0,
-    "limit": 50
+    "limit": 50,
+    "order": "asc"
   }
 }
 ```
@@ -1099,6 +1099,7 @@ async def connect():
 |--------------|------|------|
 | `page` | u64 | 页码，从 0 开始 |
 | `limit` | u64 | 每页条数，最大 200 |
+| `order` | string | 排序方向，默认 `asc`；传 `desc` 时从最新消息开始返回，适合快速查询最后对话 |
 
 **成功响应**:
 
@@ -1111,17 +1112,20 @@ async def connect():
     "session_id": "my_session",
     "page": 0,
     "limit": 50,
+    "order": "asc",
     "total": 4,
     "pages": 1,
     "messages": [
-      { "message_id": "msg_1", "role": "user", "kind": "normal", "text": "你好", "content": [{"type":"text","text":"你好"}], "created_at": "..." },
-      { "message_id": "msg_2", "role": "assistant", "kind": "normal", "text": "你好！", "content": [{"type":"text","text":"你好！"}], "created_at": "..." }
+      { "message_id": "msg_1", "session_id": "my_session", "run_id": "run_xxx", "role": "user", "kind": "normal", "text": "你好", "content": [{"type":"text","text":"你好"}], "created_at": "..." },
+      { "message_id": "msg_2", "session_id": "my_session", "run_id": "run_xxx", "role": "assistant", "kind": "normal", "text": "你好！", "content": [{"type":"text","text":"你好！"}], "created_at": "..." }
     ]
   }
 }
 ```
 
-> 每条消息包含 `text`（纯文本摘要，跳过 ToolUse 块）和 `content`（完整内容块数组，含 tool_use / tool_result 等结构化数据）。前端渲染工具调用时应使用 `content` 字段。
+> 每条消息包含 `run_id`（同一轮模型运行的聚合边界）、`text`（纯文本摘要，跳过 ToolUse 块）和 `content`（完整内容块数组，含 tool_use / tool_result 等结构化数据）。前端渲染工具调用时应使用 `content` 字段。
+>
+> 如果只想快速拿最新消息，用 `payload.order = "desc"`、`page = 0`、`limit = 1~50`，无需先读取第一页等待 `total` 后再计算最后一页。
 
 **role 取值**:
 
@@ -1229,40 +1233,7 @@ async def connect():
 
 ---
 
-### 4.18 `session.clear` — 清空上下文视图
-
-**作用**: 清空当前 Active Context，不删除消息历史。
-
-**请求**:
-
-```json
-{
-  "command": "session.clear",
-  "request_id": "r16",
-  "session_id": "my_session",
-  "payload": {}
-}
-```
-
-**成功响应**:
-
-```json
-{
-  "type": "response",
-  "request_id": "r16",
-  "success": true,
-  "payload": {
-    "session_id": "my_session",
-    "cleared": true,
-    "before": { "message_count": 12, "estimated_tokens": 3200 },
-    "note": "messages preserved in storage, context view cleared"
-  }
-}
-```
-
----
-
-### 4.19 `session.fork` — 分叉 Session
+### 4.18 `session.fork` — 分叉 Session
 
 **作用**: 将源 session 的全部数据（消息、上下文、seeds、runs、工具配置）复制到一个新 session。原 session 完全不受影响，新 session 可独立继续对话。
 
@@ -1333,7 +1304,7 @@ async def connect():
 
 ---
 
-### 4.20 `system.stats` — 系统统计
+### 4.19 `system.stats` — 系统统计
 
 **请求**:
 
@@ -1369,7 +1340,7 @@ async def connect():
 
 ---
 
-### 4.21 `runtime.sessions` — 查询运行中的 Session
+### 4.20 `runtime.sessions` — 查询运行中的 Session
 
 **请求**:
 
@@ -1402,7 +1373,7 @@ async def connect():
 
 ---
 
-### 4.22 `context.preview` — 预览上下文视图
+### 4.21 `context.preview` — 预览上下文视图
 
 **请求**:
 
@@ -1452,24 +1423,37 @@ async def connect():
 
 ---
 
-### 4.23 `context.reset` — 重置上下文规则
+### 4.22 `context.trim.set` — 设置主裁剪策略
+
+主裁剪策略同一时间只有一个 `mode` 生效；清空主裁剪、从指定消息后开始、只保留最近 N 条，都统一通过本命令表达。
 
 **请求**:
 
 ```json
 {
-  "command": "context.reset",
+  "command": "context.trim.set",
   "request_id": "r20",
   "session_id": "my_session",
-  "payload": {}
+  "payload": {
+    "mode": "checkpoint",
+    "trigger_max_context_messages": 300,
+    "retain_recent_turns": 20
+  }
 }
 ```
 
-**成功响应**: 返回新的 `active_context`（mode: `"full"`）。
+| mode | payload 字段 | 说明 |
+|------|--------------|------|
+| `none` | - | 关闭主裁剪策略，恢复完整消息视图（不删除历史） |
+| `keep_recent_messages` | `keep_messages` | 硬限制只保留最近 N 条上下文消息 |
+| `include_after` | `message_id` | 只纳入指定消息之后的历史 |
+| `checkpoint` | `trigger_max_context_messages`, `retain_recent_turns` | 按上下文消息数触发，按最近用户对话轮数保留 |
+
+**额外事件**: `context.updated`（`payload.action = "trim.set"`；自动阶梯裁剪真正触发时为 `trim.checkpoint_applied`）
 
 ---
 
-### 4.24 `context.exclude` — 排除消息区间
+### 4.23 `context.exclude` — 排除消息区间
 
 **请求**:
 
@@ -1494,49 +1478,9 @@ async def connect():
 
 ---
 
-### 4.25 `context.include_after` — 从某消息后纳入上下文
+### 4.24 `context.seed.add` — 新增上下文 Seed
 
-**请求**:
-
-```json
-{
-  "command": "context.include_after",
-  "request_id": "r22",
-  "session_id": "my_session",
-  "payload": {
-    "message_id": "msg_xxx"
-  }
-}
-```
-
-**额外事件**: `context.updated`（`payload.action = "include_after"`）
-
----
-
-### 4.26 `context.keep_recent` — 只保留最近 N 条
-
-**请求**:
-
-```json
-{
-  "command": "context.keep_recent",
-  "request_id": "r23",
-  "session_id": "my_session",
-  "payload": {
-    "keep": 20
-  }
-}
-```
-
-`keep` 传 `null` 取消该规则。
-
-**额外事件**: `context.updated`（`payload.action = "keep_recent"`）
-
----
-
-### 4.27 `context.seed.add` — 新增上下文 Seed
-
-Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构建模型输入时位于普通 messages 之前，且不受 `include_after` / `keep_recent` 等消息裁剪规则影响。
+Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构建模型输入时位于普通 messages 之前，且不受主裁剪策略影响。
 
 **请求**:
 
@@ -1565,9 +1509,11 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
 
 ---
 
-### 4.28 `context.seed.set` — 按类型覆盖写入 Seed
+### 4.25 `context.seed.set` — 按类型覆盖写入 Seed
 
 适合写入“同类型只保留一份”的动态上下文，例如压缩摘要、用户偏好、世界状态。执行时会先删除当前 Session 中同 kind 的旧 seeds，再写入新 seed。
+
+> 注意：`context.seed.set` 只更新 seed，不会修改 `active_context`，不会移动 `context.trim.set` 的裁剪边界。压缩摘要写入后，如果业务端确认要隐藏旧历史，需要再显式调用 `context.trim.set`。
 
 **请求**:
 
@@ -1589,7 +1535,7 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
 
 ---
 
-### 4.29 `context.seed.delete` — 删除指定 Seed
+### 4.26 `context.seed.delete` — 删除指定 Seed
 
 **请求**:
 
@@ -1612,7 +1558,7 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
 
 ---
 
-### 4.30 `context.seed.clear` — 清空 Seeds
+### 4.27 `context.seed.clear` — 清空 Seeds
 
 按 kind 清空；不传 kind 时清空当前 Session 的全部 seeds。
 
@@ -1637,7 +1583,7 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
 
 ---
 
-### 4.31 `events.pull` — 断线补拉事件
+### 4.28 `events.pull` — 断线补拉事件
 
 **请求**:
 
@@ -1671,7 +1617,7 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
 
 ---
 
-### 4.32 `events.subscribe` — 订阅实时事件
+### 4.29 `events.subscribe` — 订阅实时事件
 
 **请求**:
 
@@ -1707,7 +1653,7 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
 
 ---
 
-### 4.33 `run.cancel` — 中断运行
+### 4.30 `run.cancel` — 中断运行
 
 **请求**:
 
@@ -1764,7 +1710,6 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
 | `session.unarchived` | Session 恢复归档 | - |
 | `session.deleted` | Session 永久删除 | - |
 | `context.threshold.reached` | 上下文 token 达阈值 | - |
-| `context.reset` | 上下文重置 | - |
 | `context.updated` | 上下文规则更新 | - |
 | `context.seed.added` | 新增 seed | - |
 | `context.seed.updated` | 覆盖写入 seed | - |

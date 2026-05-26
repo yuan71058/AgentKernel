@@ -491,14 +491,49 @@ pub enum ContextMode {
     Compacted,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrimMode {
+    None,
+    KeepRecentMessages,
+    IncludeAfter,
+    Checkpoint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrimPolicy {
+    pub mode: TrimMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_messages: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger_max_context_messages: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retain_recent_turns: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_after_message_id: Option<String>,
+}
+
+impl Default for TrimPolicy {
+    fn default() -> Self {
+        Self {
+            mode: TrimMode::None,
+            keep_messages: None,
+            message_id: None,
+            trigger_max_context_messages: None,
+            retain_recent_turns: None,
+            applied_after_message_id: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ContextRules {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub include_after_message_id: Option<String>,
     #[serde(default)]
     pub exclude_ranges: Vec<(String, String)>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub keep_recent_messages: Option<u64>,
+    #[serde(default)]
+    pub trim: TrimPolicy,
     #[serde(default)]
     pub base_seed_ids: Vec<String>,
 }

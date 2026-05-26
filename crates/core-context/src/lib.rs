@@ -198,23 +198,12 @@ impl ContextManager {
         ctx
     }
 
-    /// 只保留某条消息之后的上下文
-    pub fn include_after(&self, session_id: &str, message_id: &str) -> ContextState {
+    /// 设置主裁剪策略；keep_recent_messages / include_after / checkpoint 互斥。
+    pub fn set_trim_policy(&self, session_id: &str, policy: TrimPolicy) -> ContextState {
         let mut ctx = self.get_context(session_id)
             .unwrap_or_else(|| self.default_context_state(session_id));
-        ctx.mode = ContextMode::Sliding;
-        ctx.rules.include_after_message_id = Some(message_id.to_string());
-        ctx.created_at = chrono::Utc::now();
-        self.set_context(session_id, ctx.clone());
-        ctx
-    }
-
-    /// 设置最近消息窗口
-    pub fn set_keep_recent(&self, session_id: &str, keep: Option<u64>) -> ContextState {
-        let mut ctx = self.get_context(session_id)
-            .unwrap_or_else(|| self.default_context_state(session_id));
-        ctx.mode = if keep.is_some() { ContextMode::Sliding } else { ContextMode::Full };
-        ctx.rules.keep_recent_messages = keep;
+        ctx.mode = if matches!(policy.mode, TrimMode::None) { ContextMode::Full } else { ContextMode::Sliding };
+        ctx.rules.trim = policy;
         ctx.created_at = chrono::Utc::now();
         self.set_context(session_id, ctx.clone());
         ctx
@@ -289,10 +278,30 @@ impl ContextManager {
     fn apply_rules(&self, messages: &[Message], rules: &ContextRules) -> Vec<Message> {
         let mut result: Vec<Message> = messages.to_vec();
 
-        // include_after_message_id 过滤
-        if let Some(ref after_id) = rules.include_after_message_id {
-            if let Some(pos) = result.iter().position(|m| &m.message_id == after_id) {
-                result = result[pos + 1..].to_vec();
+        match rules.trim.mode {
+            TrimMode::None => {}
+            TrimMode::IncludeAfter => {
+                if let Some(ref after_id) = rules.trim.message_id {
+                    if let Some(pos) = result.iter().position(|m| &m.message_id == after_id) {
+                        result = result[pos + 1..].to_vec();
+                    }
+                }
+            }
+            TrimMode::KeepRecentMessages => {
+                if let Some(keep) = rules.trim.keep_messages {
+                    let keep = keep as usize;
+                    if result.len() > keep {
+                        let start = Self::normalize_keep_recent_start(&result, result.len() - keep);
+                        result = result[start..].to_vec();
+                    }
+                }
+            }
+            TrimMode::Checkpoint => {
+                if let Some(ref after_id) = rules.trim.applied_after_message_id {
+                    if let Some(pos) = result.iter().position(|m| &m.message_id == after_id) {
+                        result = result[pos + 1..].to_vec();
+                    }
+                }
             }
         }
 
@@ -307,16 +316,63 @@ impl ContextManager {
             }
         }
 
-        // keep_recent_messages
-        if let Some(keep) = rules.keep_recent_messages {
-            let keep = keep as usize;
-            if result.len() > keep {
-                let start = Self::normalize_keep_recent_start(&result, result.len() - keep);
-                result = result[start..].to_vec();
+        result
+    }
+
+    /// 如果 checkpoint 达到阈值，按最近 N 个用户 turn 找到新的裁剪起点。
+    /// 返回 Some(new_context) 表示策略发生了实际应用。
+    pub fn apply_checkpoint_trim_if_needed(&self, session_id: &str) -> Option<ContextState> {
+        let mut ctx = self.get_context(session_id)?;
+        if ctx.rules.trim.mode != TrimMode::Checkpoint {
+            return None;
+        }
+        let threshold = ctx.rules.trim.trigger_max_context_messages? as usize;
+        let retain_turns = ctx.rules.trim.retain_recent_turns? as usize;
+        if threshold == 0 || retain_turns == 0 {
+            return None;
+        }
+
+        let all = self.get_all_messages(session_id);
+        let active = self.apply_rules(&all, &ctx.rules);
+        if active.len() <= threshold {
+            return None;
+        }
+
+        let after_id = Self::checkpoint_after_message_id(&active, retain_turns)?;
+        if ctx.rules.trim.applied_after_message_id.as_deref() == Some(after_id.as_str()) {
+            return None;
+        }
+
+        ctx.mode = ContextMode::Sliding;
+        ctx.rules.trim.applied_after_message_id = Some(after_id);
+        ctx.created_at = chrono::Utc::now();
+        self.set_context(session_id, ctx.clone());
+        Some(ctx)
+    }
+
+    fn checkpoint_after_message_id(messages: &[Message], retain_turns: usize) -> Option<String> {
+        let mut user_seen = 0usize;
+        let mut first_retained_user_idx = None;
+
+        for (idx, message) in messages.iter().enumerate().rev() {
+            if message.role == Role::User && !Self::message_is_tool_result(message) {
+                user_seen += 1;
+                first_retained_user_idx = Some(idx);
+                if user_seen >= retain_turns {
+                    break;
+                }
             }
         }
 
-        result
+        let first_idx = first_retained_user_idx?;
+        if first_idx == 0 {
+            return None;
+        }
+        Some(messages[first_idx - 1].message_id.clone())
+    }
+
+    fn message_is_tool_result(message: &Message) -> bool {
+        message.content.iter().any(|block| matches!(block, ContentBlock::ToolResult { .. }))
     }
 
     fn normalize_keep_recent_start(messages: &[Message], mut start: usize) -> usize {
@@ -434,7 +490,11 @@ mod tests {
         ];
 
         let rules = ContextRules {
-            keep_recent_messages: Some(5),
+            trim: TrimPolicy {
+                mode: TrimMode::KeepRecentMessages,
+                keep_messages: Some(5),
+                ..Default::default()
+            },
             ..Default::default()
         };
 

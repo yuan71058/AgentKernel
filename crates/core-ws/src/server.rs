@@ -333,11 +333,12 @@ async fn handle_connection(
                 commands::SESSION_ARCHIVE,
                 commands::SESSION_UNARCHIVE,
                 commands::SESSION_DELETE,
-                commands::SESSION_CLEAR,
                 commands::SESSION_MESSAGES,
                 commands::LIST_SESSIONS,
                 commands::SYSTEM_STATS,
                 commands::CONTEXT_PREVIEW,
+                commands::CONTEXT_TRIM_SET,
+                commands::CONTEXT_EXCLUDE,
                 commands::CONTEXT_SEED_ADD,
                 commands::CONTEXT_SEED_DELETE,
                 commands::CONTEXT_SEED_CLEAR,
@@ -510,9 +511,6 @@ async fn handle_connection(
             commands::SESSION_DELETE => {
                 handle_session_delete(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
             }
-            commands::SESSION_CLEAR => {
-                handle_session_clear(&scaffold, &tx_clone, &session_id, &request_id).await;
-            }
             commands::SESSION_FORK => {
                 handle_session_fork(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
             }
@@ -538,17 +536,11 @@ async fn handle_connection(
                 }
                 handle_context_preview(&scaffold, &tx_clone, &session_id, &request_id).await;
             }
-            commands::CONTEXT_RESET => {
-                handle_context_reset(&scaffold, &tx_clone, &session_id, &request_id).await;
+            commands::CONTEXT_TRIM_SET => {
+                handle_context_trim_set(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
             }
             commands::CONTEXT_EXCLUDE => {
                 handle_context_exclude(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
-            }
-            commands::CONTEXT_INCLUDE_AFTER => {
-                handle_context_include_after(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
-            }
-            commands::CONTEXT_KEEP_RECENT => {
-                handle_context_keep_recent(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
             }
             commands::CONTEXT_SEED_ADD => {
                 handle_context_seed_add(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
@@ -1208,34 +1200,6 @@ async fn handle_session_delete(
     }
 }
 
-/// session.clear — 仅清空上下文视图（消息永久保留，符合规则）
-async fn handle_session_clear(
-    scaffold: &AgentKernel,
-    tx: &mpsc::Sender<WsMessage>,
-    session_id: &str,
-    request_id: &str,
-) {
-    if session_id.is_empty() {
-        send_err(tx, request_id, "session_id is required").await;
-        return;
-    }
-
-    let before = scaffold.context_mgr.stats(session_id);
-    scaffold.context_mgr.remove_session(session_id);
-
-    send_ok(tx, request_id, json!({
-        "session_id": session_id,
-        "cleared": true,
-        "before": {
-            "message_count": before.message_count,
-            "estimated_tokens": before.estimated_tokens,
-        },
-        "note": "messages preserved in storage, context view cleared",
-    })).await;
-
-    info!(session_id = %session_id, "context cleared via ws");
-}
-
 /// session.fork — 分叉 session（复制历史/上下文/工具到新 session，不影响原 session）
 async fn handle_session_fork(
     scaffold: &AgentKernel,
@@ -1288,12 +1252,20 @@ async fn handle_session_messages(
     let page = payload["page"].as_u64().unwrap_or(0) as usize;
     let limit = payload["limit"].as_u64().unwrap_or(50) as usize;
     let limit = limit.min(200); // 上限 200
+    let order = payload["order"].as_str().unwrap_or("asc");
+    let desc = matches!(order, "desc" | "descending");
 
     let all = scaffold.context_mgr.get_all_messages(session_id);
     let total = all.len();
     let offset = page * limit;
 
-    let paged: Vec<serde_json::Value> = all.iter()
+    let ordered: Vec<_> = if desc {
+        all.iter().rev().collect()
+    } else {
+        all.iter().collect()
+    };
+
+    let paged: Vec<serde_json::Value> = ordered.into_iter()
         .skip(offset)
         .take(limit)
         .map(|m| {
@@ -1307,6 +1279,8 @@ async fn handle_session_messages(
             }).collect();
             json!({
                 "message_id": m.message_id,
+                "session_id": m.session_id,
+                "run_id": m.run_id,
                 "role": format!("{:?}", m.role).to_lowercase(),
                 "kind": format!("{:?}", m.kind).to_lowercase(),
                 "text": text,
@@ -1320,6 +1294,7 @@ async fn handle_session_messages(
         "session_id": session_id,
         "page": page,
         "limit": limit,
+        "order": if desc { "desc" } else { "asc" },
         "total": total,
         "pages": (total as f64 / limit as f64).ceil() as u64,
         "messages": paged,
@@ -1524,23 +1499,81 @@ async fn emit_context_event(scaffold: &AgentKernel, session_id: &str, event_type
     scaffold.event_bus.emit(EventEnvelope::new(event_type, session_id).with_payload(payload));
 }
 
-async fn handle_context_reset(
+async fn handle_context_trim_set(
     scaffold: &AgentKernel,
     tx: &mpsc::Sender<WsMessage>,
     session_id: &str,
     request_id: &str,
+    payload: &serde_json::Value,
 ) {
     if session_id.is_empty() {
         send_err(tx, request_id, "session_id is required").await;
         return;
     }
+
+    let mode = payload["mode"].as_str().unwrap_or("none");
+    let policy = match mode {
+        "none" => TrimPolicy::default(),
+        "keep_recent_messages" => {
+            let Some(keep_messages) = payload["keep_messages"].as_u64() else {
+                send_err(tx, request_id, "keep_messages is required for mode keep_recent_messages").await;
+                return;
+            };
+            if keep_messages == 0 {
+                send_err(tx, request_id, "keep_messages must be greater than 0").await;
+                return;
+            }
+            TrimPolicy {
+                mode: TrimMode::KeepRecentMessages,
+                keep_messages: Some(keep_messages),
+                ..Default::default()
+            }
+        }
+        "include_after" => {
+            let message_id = payload["message_id"].as_str().unwrap_or("").trim().to_string();
+            if message_id.is_empty() {
+                send_err(tx, request_id, "message_id is required for mode include_after").await;
+                return;
+            }
+            TrimPolicy {
+                mode: TrimMode::IncludeAfter,
+                message_id: Some(message_id),
+                ..Default::default()
+            }
+        }
+        "checkpoint" => {
+            let Some(trigger_max_context_messages) = payload["trigger_max_context_messages"].as_u64() else {
+                send_err(tx, request_id, "trigger_max_context_messages is required for mode checkpoint").await;
+                return;
+            };
+            let Some(retain_recent_turns) = payload["retain_recent_turns"].as_u64() else {
+                send_err(tx, request_id, "retain_recent_turns is required for mode checkpoint").await;
+                return;
+            };
+            if trigger_max_context_messages == 0 || retain_recent_turns == 0 {
+                send_err(tx, request_id, "trigger_max_context_messages and retain_recent_turns must be greater than 0").await;
+                return;
+            }
+            TrimPolicy {
+                mode: TrimMode::Checkpoint,
+                trigger_max_context_messages: Some(trigger_max_context_messages),
+                retain_recent_turns: Some(retain_recent_turns),
+                ..Default::default()
+            }
+        }
+        _ => {
+            send_err(tx, request_id, &format!("unknown trim mode: {}", mode)).await;
+            return;
+        }
+    };
+
     scaffold.session_mgr.get_or_create(session_id).await.ok();
-    let ctx = scaffold.context_mgr.reset_context(session_id);
+    let ctx = scaffold.context_mgr.set_trim_policy(session_id, policy);
     if let Err(e) = persist_context_state(scaffold, &ctx).await {
         send_err(tx, request_id, &e).await;
         return;
     }
-    emit_context_event(scaffold, session_id, "context.reset", json!({"context": ctx.clone()})).await;
+    emit_context_event(scaffold, session_id, "context.updated", json!({"action": "trim.set", "context": ctx.clone()})).await;
     send_ok(tx, request_id, json!({"session_id": session_id, "active_context": ctx})).await;
 }
 
@@ -1568,54 +1601,6 @@ async fn handle_context_exclude(
         return;
     }
     emit_context_event(scaffold, session_id, "context.updated", json!({"action": "exclude", "context": ctx.clone()})).await;
-    send_ok(tx, request_id, json!({"session_id": session_id, "active_context": ctx})).await;
-}
-
-async fn handle_context_include_after(
-    scaffold: &AgentKernel,
-    tx: &mpsc::Sender<WsMessage>,
-    session_id: &str,
-    request_id: &str,
-    payload: &serde_json::Value,
-) {
-    if session_id.is_empty() {
-        send_err(tx, request_id, "session_id is required").await;
-        return;
-    }
-    let message_id = payload["message_id"].as_str().unwrap_or("");
-    if message_id.is_empty() {
-        send_err(tx, request_id, "message_id is required").await;
-        return;
-    }
-    scaffold.session_mgr.get_or_create(session_id).await.ok();
-    let ctx = scaffold.context_mgr.include_after(session_id, message_id);
-    if let Err(e) = persist_context_state(scaffold, &ctx).await {
-        send_err(tx, request_id, &e).await;
-        return;
-    }
-    emit_context_event(scaffold, session_id, "context.updated", json!({"action": "include_after", "context": ctx.clone()})).await;
-    send_ok(tx, request_id, json!({"session_id": session_id, "active_context": ctx})).await;
-}
-
-async fn handle_context_keep_recent(
-    scaffold: &AgentKernel,
-    tx: &mpsc::Sender<WsMessage>,
-    session_id: &str,
-    request_id: &str,
-    payload: &serde_json::Value,
-) {
-    if session_id.is_empty() {
-        send_err(tx, request_id, "session_id is required").await;
-        return;
-    }
-    let keep = if payload["keep"].is_null() { None } else { payload["keep"].as_u64() };
-    scaffold.session_mgr.get_or_create(session_id).await.ok();
-    let ctx = scaffold.context_mgr.set_keep_recent(session_id, keep);
-    if let Err(e) = persist_context_state(scaffold, &ctx).await {
-        send_err(tx, request_id, &e).await;
-        return;
-    }
-    emit_context_event(scaffold, session_id, "context.updated", json!({"action": "keep_recent", "context": ctx.clone()})).await;
     send_ok(tx, request_id, json!({"session_id": session_id, "active_context": ctx})).await;
 }
 

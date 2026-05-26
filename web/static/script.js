@@ -43,11 +43,13 @@ createApp({
       return false;
     });
     // 点击外部关闭下拉
+    const activeSessionMenu = ref(null);
     if (typeof document !== 'undefined') {
       document.addEventListener('click', (e) => {
         if (!e.target.closest('.ws-select')) wsDropdownOpen.value = false;
         if (!e.target.closest('.mobile-session-bar')) mobileSessionOpen.value = false;
         if (!e.target.closest('.mobile-more-popup') && !e.target.closest('.btn-more')) mobileMoreOpen.value = false;
+        if (!e.target.closest('.session-action-menu') && !e.target.closest('.btn-session-menu')) activeSessionMenu.value = null;
       });
     }
     const connected = ref(false);
@@ -109,7 +111,10 @@ createApp({
     let _systemPromptAutoApplied = false;
     const contextPreview = ref({});
     const contextStatus = ref('');
-    const contextKeepRecent = ref(20);
+    const contextTrimMode = ref('checkpoint');
+    const contextKeepMessages = ref(50);
+    const contextTriggerMaxMessages = ref(300);
+    const contextRetainTurns = ref(20);
     const contextIncludeAfter = ref('');
     const contextSeedKind = ref('system_memory');
     const contextSeedContent = ref('');
@@ -526,8 +531,173 @@ createApp({
         if (meta) lastMsg.meta = meta;
         return false;
       }
-      chatMessages.value.push({ role: 'assistant', text: normalized, meta });
+      if (lastMsg && lastMsg.role === 'assistant' && lastMsg._toolChainGroup && lastMsg.runId === currentRunId.value) {
+        lastMsg.text = normalized;
+        if (meta) lastMsg.meta = meta;
+        return true;
+      }
+      chatMessages.value.push({ role: 'assistant', text: normalized, meta, runId: currentRunId.value || '' });
       return true;
+    }
+
+    function normalizeToolResultContent(value) {
+      if (value == null) return '';
+      if (typeof value === 'string') return value;
+      try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+    }
+
+    function getMessageRunId(message) {
+      return message?.run_id || message?.metadata?.run_id || '';
+    }
+
+    function getOrCreateToolChainGroup(mappedMessages, runId, meta) {
+      for (let i = mappedMessages.length - 1; i >= 0; i--) {
+        const item = mappedMessages[i];
+        if (item && item.role === 'assistant' && item._toolChainGroup && item.runId === runId) {
+          return item;
+        }
+        if (item && item.runId && runId && item.runId !== runId) break;
+      }
+      const group = {
+        role: 'assistant',
+        text: '',
+        meta,
+        runId,
+        _toolChainGroup: true,
+        _toolChainExpanded: false,
+        toolCalls: [],
+      };
+      mappedMessages.push(group);
+      return group;
+    }
+
+    function attachToolResultToGroups(mappedMessages, tr, meta, runId) {
+      const result = normalizeToolResultContent(tr.content);
+      for (let j = mappedMessages.length - 1; j >= 0; j--) {
+        const prev = mappedMessages[j];
+        if (!prev.toolCalls || (runId && prev.runId && prev.runId !== runId)) continue;
+        const tc = prev.toolCalls.find(t => t.id === tr.tool_use_id);
+        if (tc) {
+          tc.result = result;
+          tc.isError = !!tr.is_error;
+          tc.status = tr.is_error ? 'error' : 'done';
+          return true;
+        }
+      }
+      mappedMessages.push({
+        role: 'tool',
+        text: result,
+        meta,
+        runId,
+        toolResult: { toolUseId: tr.tool_use_id, isError: !!tr.is_error, status: 'orphan_result' },
+      });
+      return false;
+    }
+
+    function mapProtocolMessagesToChatMessages(messages) {
+      const mappedMessages = [];
+      for (const m of messages || []) {
+        if (m.role !== 'user' && m.role !== 'assistant' && m.role !== 'tool') continue;
+        const meta = m.created_at ? new Date(m.created_at).toLocaleTimeString('zh-CN', {hour12:false}) : '';
+        const runId = getMessageRunId(m);
+        const content = Array.isArray(m.content) ? m.content : [];
+
+        const toolUses = content.filter(c => c && c.type === 'tool_use');
+        const toolResults = content.filter(c => c && c.type === 'tool_result');
+        const textBlocks = content.filter(c => c && c.type === 'text');
+        const imageBlocks = content.filter(c => c && c.type === 'image');
+        const audioBlocks = content.filter(c => c && c.type === 'audio');
+        const textContent = textBlocks.map(c => c.text || '').join('').trim() || m.text || '';
+
+        const historyImages = imageBlocks.map(ib => {
+          const src = ib.source || {};
+          const mediaType = src.media_type || 'image/png';
+          const data = src.data || '';
+          return { name: 'image', dataUrl: `data:${mediaType};base64,${data}` };
+        });
+
+        const historyAudio = audioBlocks.map(ab => {
+          const src = ab.source || {};
+          const format = src.format || 'wav';
+          const data = src.data || '';
+          const mimeMap = { wav: 'audio/wav', mp3: 'audio/mpeg', ogg: 'audio/ogg', webm: 'audio/webm', mp4: 'audio/mp4' };
+          const mime = mimeMap[format] || 'audio/wav';
+          return { name: `audio.${format}`, dataUrl: `data:${mime};base64,${data}`, format, duration: 0 };
+        });
+
+        if (toolUses.length > 0) {
+          const group = getOrCreateToolChainGroup(mappedMessages, runId, meta);
+          if (textContent) {
+            group.text = group.text ? `${group.text}\n${textContent}` : textContent;
+          }
+          group.meta = meta || group.meta;
+          for (const tu of toolUses) {
+            if (!group.toolCalls.some(t => t.id === tu.id)) {
+              group.toolCalls.push({
+                id: tu.id,
+                name: tu.name,
+                input: tu.input || {},
+                result: null,
+                isError: false,
+                status: 'pending',
+              });
+            }
+          }
+        }
+
+        if (toolResults.length > 0) {
+          for (const tr of toolResults) {
+            attachToolResultToGroups(mappedMessages, tr, meta, runId);
+          }
+        }
+
+        if (toolUses.length === 0 && toolResults.length === 0 && (textContent || historyImages.length > 0 || historyAudio.length > 0)) {
+          if (m.role === 'assistant' && runId) {
+            const group = getOrCreateToolChainGroup(mappedMessages, runId, meta);
+            group.text = group.text ? `${group.text}\n${textContent}` : textContent;
+            group.meta = meta || group.meta;
+            if (historyImages.length > 0) group.images = [...(group.images || []), ...historyImages];
+            if (historyAudio.length > 0) group.audioFiles = [...(group.audioFiles || []), ...historyAudio];
+          } else {
+            const entry = { role: m.role, text: textContent, meta, runId };
+            if (historyImages.length > 0) entry.images = historyImages;
+            if (historyAudio.length > 0) entry.audioFiles = historyAudio;
+            mappedMessages.push(entry);
+          }
+        }
+      }
+      return mappedMessages;
+    }
+
+    function ensureActiveToolChainMessage(runId = currentRunId.value) {
+      let lastMsg = chatMessages.value[chatMessages.value.length - 1];
+      if (!lastMsg || lastMsg.role !== 'assistant' || !lastMsg.toolCalls || (runId && lastMsg.runId && lastMsg.runId !== runId)) {
+        lastMsg = { role: 'assistant', text: '', runId, _toolChainGroup: true, _toolChainExpanded: true, toolCalls: [] };
+        chatMessages.value.push(lastMsg);
+      }
+      if (!lastMsg.toolCalls) lastMsg.toolCalls = [];
+      lastMsg._toolChainGroup = true;
+      lastMsg._toolChainExpanded = true;
+      if (runId && !lastMsg.runId) lastMsg.runId = runId;
+      return lastMsg;
+    }
+
+    function toolChainSummary(toolCalls) {
+      const calls = Array.isArray(toolCalls) ? toolCalls : [];
+      const total = calls.length;
+      const error = calls.filter(t => t.status === 'error').length;
+      const pending = calls.filter(t => t.status === 'pending').length;
+      const done = calls.filter(t => t.status === 'done').length;
+      if (error > 0) return `工具链 ${total} 个：${done} 完成 / ${error} 失败 / ${pending} 执行中`;
+      if (pending > 0) return `工具链 ${total} 个：${done} 完成 / ${pending} 执行中`;
+      return `工具链 ${total} 个：全部完成`;
+    }
+
+    function toolChainStatus(toolCalls) {
+      const calls = Array.isArray(toolCalls) ? toolCalls : [];
+      if (calls.some(t => t.status === 'error')) return 'error';
+      if (calls.some(t => t.status === 'pending')) return 'pending';
+      return calls.length ? 'done' : 'idle';
     }
 
     function connect() {
@@ -853,94 +1023,7 @@ createApp({
               fullMessagesLoading.value = false;
               setTimeout(() => fullMessages.value.forEach(m => m._new = false), 800);
             } else if (msgs.length > 0) {
-              const mappedMessages = [];
-              for (const m of msgs) {
-                if (m.role !== 'user' && m.role !== 'assistant') continue;
-                const meta = m.created_at ? new Date(m.created_at).toLocaleTimeString('zh-CN', {hour12:false}) : '';
-                const content = Array.isArray(m.content) ? m.content : [];
-
-                // 检测是否包含 tool_use / tool_result / image
-                const toolUses = content.filter(c => c && c.type === 'tool_use');
-                const toolResults = content.filter(c => c && c.type === 'tool_result');
-                const textBlocks = content.filter(c => c && c.type === 'text');
-                const imageBlocks = content.filter(c => c && c.type === 'image');
-                const audioBlocks = content.filter(c => c && c.type === 'audio');
-                const textContent = textBlocks.map(c => c.text || '').join('').trim() || m.text || '';
-
-                // 构建图片数据（历史图片用 dataUrl 格式）
-                const historyImages = imageBlocks.map(ib => {
-                  const src = ib.source || {};
-                  const mediaType = src.media_type || 'image/png';
-                  const data = src.data || '';
-                  return {
-                    name: 'image',
-                    dataUrl: `data:${mediaType};base64,${data}`,
-                  };
-                });
-
-                // 构建音频数据（历史音频用 dataUrl 格式）
-                const historyAudio = audioBlocks.map(ab => {
-                  const src = ab.source || {};
-                  const format = src.format || 'wav';
-                  const data = src.data || '';
-                  const mimeMap = { wav: 'audio/wav', mp3: 'audio/mpeg', ogg: 'audio/ogg', webm: 'audio/webm', mp4: 'audio/mp4' };
-                  const mime = mimeMap[format] || 'audio/wav';
-                  return {
-                    name: `audio.${format}`,
-                    dataUrl: `data:${mime};base64,${data}`,
-                    format,
-                    duration: 0,
-                  };
-                });
-
-                if (toolUses.length > 0) {
-                  // assistant 消息含 tool_use：渲染文本 + 工具调用卡片
-                  mappedMessages.push({
-                    role: 'assistant',
-                    text: textContent,
-                    meta,
-                    _toolChainExpanded: false,
-                    toolCalls: toolUses.map(tu => ({
-                      id: tu.id, name: tu.name, input: tu.input || {},
-                      result: null, isError: false, status: 'pending',
-                    })),
-                  });
-                } else if (toolResults.length > 0) {
-                  // tool_result 消息：合并到对应的 toolCall 卡片上
-                  for (const tr of toolResults) {
-                    // 从后往前找最近的有匹配 id 的 assistant 消息
-                    let found = false;
-                    for (let j = mappedMessages.length - 1; j >= 0; j--) {
-                      const prev = mappedMessages[j];
-                      if (prev.toolCalls) {
-                        const tc = prev.toolCalls.find(t => t.id === tr.tool_use_id);
-                        if (tc) {
-                          tc.result = tr.content || '';
-                          tc.isError = !!tr.is_error;
-                          tc.status = tr.is_error ? 'error' : 'done';
-                          found = true;
-                          break;
-                        }
-                      }
-                    }
-                    if (!found) {
-                      // 找不到对应的 tool_use（异常情况），单独显示
-                      mappedMessages.push({
-                        role: 'tool',
-                        text: tr.content || '',
-                        meta,
-                        toolResult: { toolUseId: tr.tool_use_id, isError: !!tr.is_error },
-                      });
-                    }
-                  }
-                } else if (textContent || historyImages.length > 0 || historyAudio.length > 0) {
-                  // 普通文本消息（可能含图片/音频）
-                  const entry = { role: m.role, text: textContent, meta };
-                  if (historyImages.length > 0) entry.images = historyImages;
-                  if (historyAudio.length > 0) entry.audioFiles = historyAudio;
-                  mappedMessages.push(entry);
-                }
-              }
+              const mappedMessages = mapProtocolMessagesToChatMessages(msgs);
               chatMessages.value = mappedMessages;
               scrollToChat();
               const loadedCount = msgs.length;
@@ -1322,10 +1405,8 @@ createApp({
     function contextCommandName(cmd) {
       const map = {
         'context.preview': '上下文预览',
-        'context.reset': '重置上下文',
+        'context.trim.set': '设置裁剪策略',
         'context.exclude': '排除上下文消息',
-        'context.include_after': '从指定消息后开始',
-        'context.keep_recent': '仅保留最近 N 条',
         'context.seed.add': '新增 Seed',
         'context.seed.set': '覆盖写入 Seed',
         'context.seed.delete': '删除 Seed',
@@ -1348,19 +1429,34 @@ createApp({
       sendCommand('context.preview');
     }
 
-    function resetContext() {
-      sendCommand('context.reset');
+    function setTrimNone() {
+      sendCommand('context.trim.set', { mode: 'none' });
     }
 
-    function keepRecentContext() {
-      const keep = Number(contextKeepRecent.value || 0);
-      sendCommand('context.keep_recent', { keep: keep > 0 ? keep : null });
-    }
-
-    function includeAfterContext() {
-      const message_id = contextIncludeAfter.value.trim();
-      if (!message_id) return;
-      sendCommand('context.include_after', { message_id });
+    function setContextTrim() {
+      const mode = contextTrimMode.value;
+      if (mode === 'none') {
+        sendCommand('context.trim.set', { mode: 'none' });
+        return;
+      }
+      if (mode === 'keep_recent_messages') {
+        const keep_messages = Number(contextKeepMessages.value || 0);
+        if (keep_messages <= 0) return;
+        sendCommand('context.trim.set', { mode, keep_messages });
+        return;
+      }
+      if (mode === 'include_after') {
+        const message_id = contextIncludeAfter.value.trim();
+        if (!message_id) return;
+        sendCommand('context.trim.set', { mode, message_id });
+        return;
+      }
+      if (mode === 'checkpoint') {
+        const trigger_max_context_messages = Number(contextTriggerMaxMessages.value || 0);
+        const retain_recent_turns = Number(contextRetainTurns.value || 0);
+        if (trigger_max_context_messages <= 0 || retain_recent_turns <= 0) return;
+        sendCommand('context.trim.set', { mode, trigger_max_context_messages, retain_recent_turns });
+      }
     }
 
     function excludeSingleMessage(messageId) {
@@ -1513,7 +1609,7 @@ createApp({
       streamingText.value = '';
       streamingThinking.value = '';
       isStreaming.value = false;
-      sendCommand('session.retry', { max_repeated_tool_calls: 10 }, sessionId.value);
+      sendCommand('session.retry', {}, sessionId.value);
       addLocalNotice('重试', '已发送 session.retry，将基于现有消息历史续跑');
     }
 
@@ -1845,6 +1941,7 @@ createApp({
       const tool = toolRegistry.get(tool_name);
       const startTime = Date.now();
       const belongsToCurrentSession = isCurrentSession(eventSessionId);
+      const activeRunId = payload?.run_id || currentRunId.value;
 
       // 先结束流式，避免工具执行日志插入时和模型增量混在一起
       if (belongsToCurrentSession) {
@@ -1853,15 +1950,7 @@ createApp({
 
       let pendingTc = null;
       if (belongsToCurrentSession) {
-        let lastMsg = chatMessages.value[chatMessages.value.length - 1];
-        if (!lastMsg || lastMsg.role !== 'assistant') {
-           lastMsg = { role: 'assistant', text: '', _toolChainExpanded: true, toolCalls: [] };
-           chatMessages.value.push(lastMsg);
-        }
-        if (!lastMsg.toolCalls) {
-           lastMsg.toolCalls = [];
-        }
-        lastMsg._toolChainExpanded = true;
+        const lastMsg = ensureActiveToolChainMessage(activeRunId);
 
         pendingTc = {
           id: call_id,
@@ -2045,7 +2134,6 @@ createApp({
         'tool.registered': '工具注册',
         'context.threshold.reached': '上下文阈值',
         'context.updated': '上下文更新',
-        'context.reset': '上下文重置',
         'context.seed.added': 'Seed 已新增',
         'context.seed.updated': 'Seed 已覆盖',
         'context.seed.deleted': 'Seed 已删除',
@@ -2078,7 +2166,6 @@ createApp({
         case 'run.failed': return tag(JSON.stringify(p).slice(0, 90), 'err');
         case 'context.threshold.reached': return `使用率 ${tag((p.usage_percent ?? '—') + '%')} Token ${tag(p.estimated_tokens || '—')}`;
         case 'context.updated': return `动作 ${tag(contextCommandName(p.action || 'context.updated'))} Mode ${tag(contextModeLabel(p.context?.mode || '—'))}`;
-        case 'context.reset': return `Mode ${tag(p.context?.mode || 'full')}`;
         case 'context.seed.added': return `Seed ${tag(p.seed?.seed_id || '—')} ${tag(p.seed?.kind || '')}`;
         case 'context.seed.updated': return `Seed ${tag(p.seed?.seed_id || '—')} ${tag(p.seed?.kind || '')}`;
         case 'context.seed.deleted': return `Seed ${tag(p.seed_id || '—')}`;
@@ -2193,7 +2280,6 @@ createApp({
             'session.archive': '归档会话响应',
             'session.unarchive': '恢复归档响应',
             'session.delete': '永久删除会话响应',
-            'session.clear': '清空上下文响应',
             'session.fork': '分叉会话响应',
             'session.list': '会话列表响应',
             'tool.register': '注册工具响应',
@@ -2205,10 +2291,8 @@ createApp({
             'runtime.sessions': '运行中会话响应',
             'system.stats': '系统统计响应',
             'context.preview': '上下文预览响应',
-            'context.reset': '重置上下文响应',
+            'context.trim.set': '设置裁剪策略响应',
             'context.exclude': '排除上下文响应',
-            'context.include_after': '上下文起点响应',
-            'context.keep_recent': '最近消息窗口响应',
             'context.seed.add': '新增 Seed 响应',
             'context.seed.set': '覆盖 Seed 响应',
             'context.seed.delete': '删除 Seed 响应',
@@ -2245,8 +2329,14 @@ createApp({
             brief += ` Seed${tag(p.seeds.length)}`;
           }
           if (p.seed) brief += ` ${tag(seedKindLabel(p.seed.kind))} ${tag((p.seed.seed_id || '').slice(0,16))}`;
-          if (cmd === 'context.keep_recent' && p.active_context?.rules?.keep_recent_messages !== undefined) brief += ` 保留最近 ${tag(p.active_context.rules.keep_recent_messages || '全部')} 条`;
-          if (cmd === 'context.include_after' && p.active_context?.rules?.include_after_message_id) brief += ` 起点 ${tag(p.active_context.rules.include_after_message_id.slice(0,16))}`;
+          if (cmd === 'context.trim.set' && p.active_context?.rules?.trim) {
+            const trim = p.active_context.rules.trim;
+            brief += ` 策略 ${tag(trim.mode || 'none')}`;
+            if (trim.keep_messages) brief += ` 保留${tag(trim.keep_messages)}条`;
+            if (trim.message_id) brief += ` 起点${tag(trim.message_id.slice(0,16))}`;
+            if (trim.trigger_max_context_messages) brief += ` 阈值${tag(trim.trigger_max_context_messages)}条`;
+            if (trim.retain_recent_turns) brief += ` 保留${tag(trim.retain_recent_turns)}轮`;
+          }
           if (cmd === 'context.exclude' && p.active_context?.rules?.exclude_ranges) brief += ` 已排除 ${tag(p.active_context.rules.exclude_ranges.length)} 段`;
           if (p.content) brief += ` ${tag(JSON.stringify(p.content).slice(0,40))}`;
           if (p.session_id && !p.provider && !p.messages && !p.content && !p.active_context && !p.seed) brief += ` ${tag(p.session_id)}`;
@@ -2275,7 +2365,6 @@ createApp({
             'tool.registered':          () => ({ label: '工具注册', brief: `${tag(p.tool_name)} 客户端 ${tag(p.client_id)}` }),
             'context.threshold.reached':() => ({ label: '上下文阈值', brief: `使用 ${tag(p.usage_percent+'%')} Token ${tag(p.estimated_tokens)}` }),
             'context.updated':          () => ({ label: '上下文已更新', brief: `${tag(contextCommandName(p.action || 'context.updated'))} ${tag(contextModeLabel(p.context?.mode))}` }),
-            'context.reset':            () => ({ label: '上下文已重置', brief: `${tag(contextModeLabel(p.context?.mode || 'full'))}` }),
             'context.seed.added':       () => ({ label: 'Seed 已新增', brief: `${tag(seedKindLabel(p.seed?.kind))} ${tag((p.seed?.seed_id||'').slice(0,16))}` }),
             'context.seed.updated':     () => ({ label: 'Seed 已覆盖', brief: `${tag(seedKindLabel(p.seed?.kind))} ${tag((p.seed?.seed_id||'').slice(0,16))}` }),
             'context.seed.deleted':     () => ({ label: 'Seed 已删除', brief: `${tag((p.seed_id||'').slice(0,16))}` }),
@@ -2308,7 +2397,6 @@ createApp({
         'session.archive':     () => ({ label: '归档会话', brief: sid }),
         'session.unarchive':   () => ({ label: '恢复归档', brief: sid }),
         'session.delete':      () => ({ label: '永久删除会话', brief: sid }),
-        'session.clear':        () => ({ label: '清空上下文', brief: sid }),
         'session.list':         () => ({ label: '列出会话', brief: `页${p.page||0} 每页${p.limit||20}` }),
         'provider.update':      () => ({ label: '更新供应商', brief: `${sid} ${tag(p.protocol)} ${tag(p.model)}` }),
         'provider.get':         () => ({ label: '获取供应商', brief: sid }),
@@ -2463,17 +2551,18 @@ createApp({
     return {
       wsUrl, connected, connectionId, sessionId,
       wsDropdownOpen, wsCustomMode, wsPresets, wsSelectLabel, selectWsPreset,
-      selectedSessionId, sessions, archivedSessions, showArchivedSessions,
+      selectedSessionId, sessions, archivedSessions, showArchivedSessions, activeSessionMenu,
       chatInput, chatMessages, pendingImages, pendingAudio, isRecording,
       canRetrySession,
       fullMessages, fullMessagesPage, fullMessagesTotal, fullMessagesHasMore, fullMessagesLoading,
       runtimeSessions, runtimeRuns, runtimeRuntimeStatus, runtimeLoading,
       events, rawMessages, tools, toolExecLog, presetTools,
+      toolChainSummary, toolChainStatus,
       rightTab, eventFilter, rawFilter, rawInput,
       chatBody, streamBody, rawBody, fullMessagesBody,
       providerConfig, providerStatus,
       systemPrompt, systemPromptStatus,
-      contextPreview, contextStatus, contextKeepRecent, contextIncludeAfter,
+      contextPreview, contextStatus, contextTrimMode, contextKeepMessages, contextTriggerMaxMessages, contextRetainTurns, contextIncludeAfter,
       contextSeedKind, contextSeedContent, contextSeedMode,
       streamingText, isStreaming, currentRunId, currentRunStatus, runStatusLabel, autoReconnect,
       streamingThinking,
@@ -2488,7 +2577,7 @@ createApp({
       saveProvider, loadProvider, applyTemplate,
       saveSystemPrompt, loadSystemPrompt, loadTools,
       loadRuntimeSessions,
-      loadContextPreview, resetContext, keepRecentContext, includeAfterContext,
+      loadContextPreview, setTrimNone, setContextTrim,
       excludeSingleMessage, copyMessageId, saveContextSeed, deleteContextSeed, clearContextSeedsByKind, clearAllContextSeeds, contextMessageText,
       contextCommandName, contextModeLabel, seedKindLabel,
       loadFullMessages, onFullMessagesScroll, roleLabel, roleColor, formatMessageTime,

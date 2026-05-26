@@ -194,6 +194,10 @@ impl RuntimeErrorReport {
         Self::new("provider", stage, retryable, raw_error)
     }
 
+    pub fn provider_retryable(stage: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::new("provider", stage, true, message.into())
+    }
+
     pub fn core(stage: impl Into<String>, message: impl Into<String>) -> Self {
         let message = message.into();
         Self::new("core", stage, false, message)
@@ -664,6 +668,16 @@ impl AgentKernel {
                     started_at,
                 ).await;
             }
+            // 用户消息边界才应用 checkpoint 裁剪，避免 AI tool loop 中途切断 tool_use/tool_result 链。
+            if round == 0 && opts.append_user_message {
+                if let Some(ctx) = self.context_mgr.apply_checkpoint_trim_if_needed(&opts.session_id) {
+                    self.storage.save_context_state(&ctx).await?;
+                    self.event_bus.emit(EventEnvelope::new("context.updated", &opts.session_id)
+                        .with_run_id(&opts.run_id)
+                        .with_payload(serde_json::json!({"action": "trim.checkpoint_applied", "context": ctx})));
+                }
+            }
+
             // 阈值检测
             if round == 0 && self.context_mgr.should_compress(&opts.session_id) {
                 let stats = self.context_mgr.stats(&opts.session_id);
@@ -777,20 +791,13 @@ impl AgentKernel {
                 .collect();
 
             if tool_uses.is_empty() {
-                // 无工具调用 → 结束
-                let assistant_msg = Message {
-                    run_id: opts.run_id.clone(),
-                    ..Message::new(&opts.session_id, Role::Assistant, resp.content.clone())
-                };
-                self.context_mgr.add_message(&opts.session_id, assistant_msg.clone());
-                self.storage.save_message(&assistant_msg).await?;
-
+                // 无工具调用 → 结束；空响应不落盘，否则会把失败态伪装成最终 assistant 消息，阻断 retry。
                 let text: String = resp.content.iter().filter_map(|c| {
                     if let ContentBlock::Text { text, .. } = c { Some(text.as_str()) } else { None }
                 }).collect();
 
                 if text.trim().is_empty() && resp.content.is_empty() {
-                    let report = RuntimeErrorReport::provider(
+                    let report = RuntimeErrorReport::provider_retryable(
                         "model.empty_response",
                         "model returned an empty final response without text or tool_use; retry the run or check upstream provider output",
                     );
@@ -799,6 +806,13 @@ impl AgentKernel {
                         .with_payload(report.to_payload()));
                     return Err(report);
                 }
+
+                let assistant_msg = Message {
+                    run_id: opts.run_id.clone(),
+                    ..Message::new(&opts.session_id, Role::Assistant, resp.content.clone())
+                };
+                self.context_mgr.add_message(&opts.session_id, assistant_msg.clone());
+                self.storage.save_message(&assistant_msg).await?;
 
                 self.event_bus.emit(EventEnvelope::new(MODEL_COMPLETED, &opts.session_id)
                     .with_run_id(&opts.run_id)
@@ -1067,11 +1081,6 @@ impl AgentKernel {
     /// 获取 session 统计
     pub fn session_stats(&self, session_id: &str) -> core_context::ContextStats {
         self.context_mgr.stats(session_id)
-    }
-
-    /// 清除 session
-    pub fn clear_session(&self, session_id: &str) {
-        self.context_mgr.remove_session(session_id);
     }
 }
 

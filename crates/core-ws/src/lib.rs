@@ -60,7 +60,6 @@ pub mod commands {
     pub const SESSION_ARCHIVE: &str = "session.archive";
     pub const SESSION_UNARCHIVE: &str = "session.unarchive";
     pub const SESSION_DELETE: &str = "session.delete";
-    pub const SESSION_CLEAR: &str = "session.clear";
     pub const SESSION_MESSAGES: &str = "session.messages";
     pub const SESSION_FORK: &str = "session.fork";
     pub const CANCEL_RUN: &str = "run.cancel";
@@ -72,10 +71,8 @@ pub mod commands {
 
     // ─── Context ───────────────────────────
     pub const CONTEXT_PREVIEW: &str = "context.preview";
-    pub const CONTEXT_RESET: &str = "context.reset";
+    pub const CONTEXT_TRIM_SET: &str = "context.trim.set";
     pub const CONTEXT_EXCLUDE: &str = "context.exclude";
-    pub const CONTEXT_INCLUDE_AFTER: &str = "context.include_after";
-    pub const CONTEXT_KEEP_RECENT: &str = "context.keep_recent";
     pub const CONTEXT_SEED_ADD: &str = "context.seed.add";
     pub const CONTEXT_SEED_DELETE: &str = "context.seed.delete";
     pub const CONTEXT_SEED_CLEAR: &str = "context.seed.clear";
