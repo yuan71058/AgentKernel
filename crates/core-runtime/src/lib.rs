@@ -51,8 +51,9 @@ use std::any::Any;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Notify};
+use tokio::time::sleep;
 use futures::FutureExt;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -63,6 +64,65 @@ struct SessionToolSnapshotItem {
 }
 
 const DEFAULT_REPEATED_TOOL_CALL_LIMIT: u32 = 10;
+const DEFAULT_PROVIDER_MAX_RETRIES: u32 = 10;
+const PROVIDER_RETRY_BASE_DELAY_MS: u64 = 500;
+const PROVIDER_RETRY_MAX_DELAY_MS: u64 = 32_000;
+
+#[derive(Debug, Clone)]
+struct ProviderRetryPolicy {
+    max_retries: u32,
+}
+
+impl ProviderRetryPolicy {
+    fn from_env() -> Self {
+        let max_retries = std::env::var("AGENTKERNEL_PROVIDER_MAX_RETRIES")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or(DEFAULT_PROVIDER_MAX_RETRIES);
+        Self { max_retries }
+    }
+
+    fn delay_for(&self, attempt: u32, err: &str) -> Duration {
+        if let Some(ms) = retry_after_ms(err) {
+            return Duration::from_millis(ms.min(PROVIDER_RETRY_MAX_DELAY_MS));
+        }
+
+        let exponent = attempt.saturating_sub(1).min(10);
+        let base = PROVIDER_RETRY_BASE_DELAY_MS.saturating_mul(1u64 << exponent);
+        let capped = base.min(PROVIDER_RETRY_MAX_DELAY_MS);
+        let jitter = retry_jitter_ms(attempt, err, capped / 4 + 1);
+        Duration::from_millis((capped + jitter).min(PROVIDER_RETRY_MAX_DELAY_MS))
+    }
+}
+
+fn retry_jitter_ms(attempt: u32, err: &str, modulo: u64) -> u64 {
+    if modulo == 0 {
+        return 0;
+    }
+    let mut hash = 1469598103934665603u64;
+    for byte in err.as_bytes().iter().copied().chain(attempt.to_le_bytes()) {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    hash % modulo
+}
+
+fn retry_after_ms(err: &str) -> Option<u64> {
+    let lower = err.to_lowercase();
+    for marker in ["retry-after", "retry_after", "retry after"] {
+        let Some(idx) = lower.find(marker) else { continue; };
+        let tail = &lower[idx + marker.len()..];
+        let digits: String = tail
+            .chars()
+            .skip_while(|c| !c.is_ascii_digit())
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if let Ok(seconds) = digits.parse::<u64>() {
+            return Some(seconds.saturating_mul(1000));
+        }
+    }
+    None
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ToolCallFingerprint {
@@ -695,25 +755,6 @@ impl AgentKernel {
                 .get_system_prompt(&opts.session_id)
                 .unwrap_or_else(|| self.system_prompt.read().unwrap().clone());
             let system_prompt = session_system_prompt;
-            let bus = self.event_bus.clone();
-            let sid = opts.session_id.clone();
-            let rid = opts.run_id.clone();
-            let partial_text_for_handler = partial_text.clone();
-            let handler: Box<dyn Fn(StreamEvent) + Send + Sync> = Box::new(move |event| {
-                let mut event = event;
-                event.session_id = sid.clone();
-                event.run_id = rid.clone();
-                if matches!(event.event, StreamEventType::Text) {
-                    *partial_text_for_handler.write().unwrap() = event.full_text.clone();
-                }
-                bus.emit(EventEnvelope::new(MODEL_DELTA, &sid)
-                    .with_run_id(&rid)
-                    .with_payload(serde_json::json!({
-                        "delta": event.delta,
-                        "event_type": event.event,
-                    })));
-            });
-
             let active_config_owned = active_config.clone();
             let system_prompt_owned = system_prompt.clone();
             let model_input = self.context_mgr.build_model_input(&opts.session_id);
@@ -726,57 +767,120 @@ impl AgentKernel {
                     })),
             );
             let tools_for_round = active_tools.clone();
-            let adapter_for_round = adapter.clone();
-            let stream_task = tokio::spawn(async move {
-                adapter_for_round
-                    .stream_message(
-                        &active_config_owned,
-                        &system_prompt_owned,
-                        &model_input,
-                        &tools_for_round,
-                        handler,
-                    )
-                    .await
-            });
-            let abort_handle = stream_task.abort_handle();
+            let retry_policy = ProviderRetryPolicy::from_env();
+            let mut attempt = 0u32;
+            let (resp, trace) = loop {
+                attempt += 1;
+                let adapter_for_attempt = adapter.clone();
+                let active_config_for_attempt = active_config_owned.clone();
+                let system_prompt_for_attempt = system_prompt_owned.clone();
+                let model_input_for_attempt = model_input.clone();
+                let tools_for_attempt = tools_for_round.clone();
+                let bus_for_attempt = self.event_bus.clone();
+                let sid_for_attempt = opts.session_id.clone();
+                let rid_for_attempt = opts.run_id.clone();
+                let partial_text_for_attempt = partial_text.clone();
+                let handler: Box<dyn Fn(StreamEvent) + Send + Sync> = Box::new(move |event| {
+                    let mut event = event;
+                    event.session_id = sid_for_attempt.clone();
+                    event.run_id = rid_for_attempt.clone();
+                    if matches!(event.event, StreamEventType::Text) {
+                        *partial_text_for_attempt.write().unwrap() = event.full_text.clone();
+                    }
+                    bus_for_attempt.emit(EventEnvelope::new(MODEL_DELTA, &sid_for_attempt)
+                        .with_run_id(&rid_for_attempt)
+                        .with_payload(serde_json::json!({
+                            "delta": event.delta,
+                            "event_type": event.event,
+                        })));
+                });
 
-            let (resp, trace) = tokio::select! {
-                _ = run_control.notify.notified() => {
-                    abort_handle.abort();
-                    return self.finalize_cancelled_run(
-                        &opts.session_id,
-                        &opts.run_id,
-                        &partial_text,
-                        total_usage,
-                        traces,
-                        tool_calls_made,
-                        started_at,
-                    ).await;
-                }
-                joined = stream_task => {
-                    match joined {
-                        Ok(Ok((resp, trace))) => (resp, trace),
-                        Ok(Err(e)) => {
-                            let report = RuntimeErrorReport::provider("model.stream", e);
+                let stream_task = tokio::spawn(async move {
+                    adapter_for_attempt
+                        .stream_message(
+                            &active_config_for_attempt,
+                            &system_prompt_for_attempt,
+                            &model_input_for_attempt,
+                            &tools_for_attempt,
+                            handler,
+                        )
+                        .await
+                });
+                let abort_handle = stream_task.abort_handle();
+
+                let attempt_result = tokio::select! {
+                    _ = run_control.notify.notified() => {
+                        abort_handle.abort();
+                        return self.finalize_cancelled_run(
+                            &opts.session_id,
+                            &opts.run_id,
+                            &partial_text,
+                            total_usage,
+                            traces,
+                            tool_calls_made,
+                            started_at,
+                        ).await;
+                    }
+                    joined = stream_task => joined
+                };
+
+                match attempt_result {
+                    Ok(Ok((resp, mut trace))) => {
+                        trace.attempt = attempt;
+                        break (resp, trace);
+                    }
+                    Ok(Err(e)) => {
+                        let report = RuntimeErrorReport::provider("model.stream", e.clone());
+                        if !report.retryable || attempt > retry_policy.max_retries {
                             self.event_bus.emit(EventEnvelope::new(RUN_FAILED, &opts.session_id)
                                 .with_run_id(&opts.run_id)
                                 .with_payload(report.to_payload()));
                             return Err(report);
                         }
-                        Err(e) if e.is_cancelled() && run_control.is_cancelled() => {
-                            return self.finalize_cancelled_run(
-                                &opts.session_id,
-                                &opts.run_id,
-                                &partial_text,
-                                total_usage,
-                                traces,
-                                tool_calls_made,
-                                started_at,
-                            ).await;
+
+                        let delay = retry_policy.delay_for(attempt, &e);
+                        self.event_bus.emit(EventEnvelope::new(RUN_RETRYING, &opts.session_id)
+                            .with_run_id(&opts.run_id)
+                            .with_payload(serde_json::json!({
+                                "source": "provider",
+                                "stage": "model.stream",
+                                "attempt": attempt,
+                                "next_attempt": attempt + 1,
+                                "max_retries": retry_policy.max_retries,
+                                "max_attempts": retry_policy.max_retries + 1,
+                                "delay_ms": delay.as_millis() as u64,
+                                "error": e,
+                                "retryable": true,
+                            })));
+
+                        tokio::select! {
+                            _ = run_control.notify.notified() => {
+                                return self.finalize_cancelled_run(
+                                    &opts.session_id,
+                                    &opts.run_id,
+                                    &partial_text,
+                                    total_usage,
+                                    traces,
+                                    tool_calls_made,
+                                    started_at,
+                                ).await;
+                            }
+                            _ = sleep(delay) => {}
                         }
-                        Err(e) => {
-                            return Err(RuntimeErrorReport::core("model.stream.join", e.to_string()));
-                        }
+                    }
+                    Err(e) if e.is_cancelled() && run_control.is_cancelled() => {
+                        return self.finalize_cancelled_run(
+                            &opts.session_id,
+                            &opts.run_id,
+                            &partial_text,
+                            total_usage,
+                            traces,
+                            tool_calls_made,
+                            started_at,
+                        ).await;
+                    }
+                    Err(e) => {
+                        return Err(RuntimeErrorReport::core("model.stream.join", e.to_string()));
                     }
                 }
             };

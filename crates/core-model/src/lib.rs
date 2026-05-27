@@ -208,20 +208,33 @@ pub fn sanitize_tool_chain_messages(messages: &[Message], report: &ToolChainRepo
 /// Claude 协议发送前规范化：
 /// - 先走共享的工具链规范化
 /// - 再过滤 Claude 不需要回传的思维块
-pub fn normalize_for_claude(input: &PreparedModelInput) -> Vec<Message> {
-    input.sanitized_messages.clone().into_iter().map(|msg| {
-        let content: Vec<ContentBlock> = msg.content.iter().filter_map(|c| {
+/// - Context Seed 在 Core 内部表现为 Role::System，但 Claude Messages API 的 messages[] 只允许 user/assistant，
+///   所以这里把 seed 合并到 system 参数，禁止落进 messages[]。
+pub fn normalize_for_claude(input: &PreparedModelInput) -> (String, Vec<Message>) {
+    let mut extra_system_parts = Vec::new();
+    let messages = input.sanitized_messages.clone().into_iter().filter_map(|msg| {
+        let mut content = Vec::new();
+        for c in &msg.content {
             match c {
-                ContentBlock::Thinking { .. } => None,
-                _ => Some(c.clone()),
+                ContentBlock::Thinking { .. } => {}
+                ContentBlock::Text { text, .. } if matches!(msg.role, Role::System) => {
+                    if !text.trim().is_empty() {
+                        extra_system_parts.push(text.clone());
+                    }
+                }
+                _ if matches!(msg.role, Role::System) => {}
+                _ => content.push(c.clone()),
             }
-        }).collect();
-
-        Message {
-            content,
-            ..msg
         }
-    }).filter(|msg| !msg.content.is_empty()).collect()
+
+        if matches!(msg.role, Role::System) || content.is_empty() {
+            None
+        } else {
+            Some(Message { content, ..msg })
+        }
+    }).collect();
+
+    (extra_system_parts.join("\n\n"), messages)
 }
 
 /// OpenAI 适配器的消息转换（tool_use → tool_calls，tool_result → role:"tool"）
@@ -520,8 +533,9 @@ mod tests {
         ];
 
         let prepared = prepare_model_input(&messages);
-        let normalized = normalize_for_claude(&prepared);
+        let (extra_system, normalized) = normalize_for_claude(&prepared);
 
+        assert!(extra_system.is_empty());
         assert_eq!(normalized.len(), 2);
         assert!(matches!(normalized[0].content[0], ContentBlock::ToolUse { .. }));
         assert!(matches!(normalized[1].content[0], ContentBlock::ToolResult { .. }));
@@ -536,23 +550,58 @@ mod tests {
         ];
 
         let prepared = prepare_model_input(&messages);
-        let normalized = normalize_for_claude(&prepared);
+        let (extra_system, normalized) = normalize_for_claude(&prepared);
 
+        assert!(extra_system.is_empty());
         assert_eq!(normalized.len(), 1);
         assert_eq!(normalized[0].role, Role::User);
         assert!(matches!(normalized[0].content[0], ContentBlock::Text { .. }));
+    }
+
+    #[test]
+    fn normalize_for_claude_moves_system_seed_out_of_messages() {
+        let session_id = "sess";
+        let messages = vec![
+            Message::new(session_id, Role::System, vec![ContentBlock::text("历史摘要")]),
+            Message::new(session_id, Role::User, vec![ContentBlock::text("继续")]),
+        ];
+
+        let prepared = prepare_model_input(&messages);
+        let (extra_system, normalized) = normalize_for_claude(&prepared);
+
+        assert_eq!(extra_system, "历史摘要");
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(normalized[0].role, Role::User);
     }
 }
 
 /// 错误重试判断
 pub fn should_retry(err: &str) -> bool {
     let lower = err.to_lowercase();
-    lower.contains("rate limit")
+    lower.contains("x-should-retry") && lower.contains("true")
+        || lower.contains("rate limit")
         || lower.contains("429")
-        || lower.contains("timeout")
-        || lower.contains("503")
+        || lower.contains("408")
+        || lower.contains("409")
+        || lower.contains("500")
         || lower.contains("502")
+        || lower.contains("503")
         || lower.contains("504")
+        || lower.contains("529")
         || lower.contains("overloaded")
+        || lower.contains("overloaded_error")
+        || lower.contains("timeout")
+        || lower.contains("timed out")
+        || lower.contains("connection reset")
+        || lower.contains("connection refused")
+        || lower.contains("connection closed")
+        || lower.contains("connection aborted")
+        || lower.contains("broken pipe")
+        || lower.contains("network")
+        || lower.contains("connect error")
+        || lower.contains("error sending request")
+        || lower.contains("error decoding response body")
+        || lower.contains("incomplete message")
+        || lower.contains("unexpected eof")
         || lower.contains("eof")
 }

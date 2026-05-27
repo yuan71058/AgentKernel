@@ -18,6 +18,7 @@ pub mod event_types {
     pub const SESSION_UNARCHIVED: &str = "session.unarchived";
     pub const SESSION_DELETED: &str = "session.deleted";
     pub const RUN_STARTED: &str = "run.started";
+    pub const RUN_RETRYING: &str = "run.retrying";
     pub const RUN_CANCELLED: &str = "run.cancelled";
     pub const RUN_COMPLETED: &str = "run.completed";
     pub const MODEL_DELTA: &str = "model.delta";

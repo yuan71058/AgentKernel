@@ -40,13 +40,20 @@ impl ProviderAdapter for ClaudeAdapter {
             }
         }
 
-        let normalized = normalize_for_claude(&prepared);
+        let (extra_system, normalized) = normalize_for_claude(&prepared);
+        let effective_system = if extra_system.is_empty() {
+            system.to_string()
+        } else if system.trim().is_empty() {
+            extra_system
+        } else {
+            format!("{}\n\n{}", system, extra_system)
+        };
 
         let mut body = serde_json::json!({
             "model": config.model,
             "max_tokens": config.max_tokens,
             "stream": false,
-            "system": [{"type": "text", "text": system}],
+            "system": [{"type": "text", "text": effective_system}],
             "messages": serialize_messages(&normalized),
         });
         if !tools.is_empty() && config.tools_mode == ToolsMode::Standard {
@@ -117,12 +124,19 @@ impl ProviderAdapter for ClaudeAdapter {
             }
         }
 
-        let normalized = normalize_for_claude(&prepared);
+        let (extra_system, normalized) = normalize_for_claude(&prepared);
+        let effective_system = if extra_system.is_empty() {
+            system.to_string()
+        } else if system.trim().is_empty() {
+            extra_system
+        } else {
+            format!("{}\n\n{}", system, extra_system)
+        };
         let mut body = serde_json::json!({
             "model": config.model,
             "max_tokens": config.max_tokens,
             "stream": true,
-            "system": [{"type": "text", "text": system}],
+            "system": [{"type": "text", "text": effective_system}],
             "messages": serialize_messages(&normalized),
         });
         if !tools.is_empty() && config.tools_mode == ToolsMode::Standard {

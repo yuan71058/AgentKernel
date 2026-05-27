@@ -1514,6 +1514,8 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
 适合写入“同类型只保留一份”的动态上下文，例如压缩摘要、用户偏好、世界状态。执行时会先删除当前 Session 中同 kind 的旧 seeds，再写入新 seed。
 
 > 注意：`context.seed.set` 只更新 seed，不会修改 `active_context`，不会移动 `context.trim.set` 的裁剪边界。压缩摘要写入后，如果业务端确认要隐藏旧历史，需要再显式调用 `context.trim.set`。
+>
+> 内核会把 enabled seed 作为模型 `system` 前置上下文提交；对 Claude 协议适配器来说，seed 会合并进顶层 `system` 字段，不会进入 `messages[]`，因为 Claude Messages API 的 `messages[]` 只允许 `user` / `assistant`。
 
 **请求**:
 
@@ -1698,6 +1700,7 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
 | `model.delta` | 流式文本增量 | ✅ |
 | `model.completed` | 模型输出完成 | ✅ |
 | `run.completed` | 运行结束（含统计） | ✅ |
+| `run.retrying` | Core 遇到可恢复供应商错误，正在内部重试 | ✅ |
 | `run.cancelled` | 运行被中断 | - |
 | `tool_chain.diagnosed` | 工具链诊断 | ✅ |
 | `tool.call.request` | 请求业务端/能力执行器执行工具 | - |
@@ -1822,6 +1825,32 @@ Seed 是 Session 级动态前置上下文块，不属于普通消息历史；构
 - `result` 建议为字符串；如需返回复杂结构，请先序列化为字符串
 - `is_error = true` 表示执行失败
 - 该事件用于事件流、trace、debug、replay，不是再次要求业务端执行
+
+#### `run.retrying` — Core 内部重试供应商请求
+
+```json
+{
+  "type": "event",
+  "event_type": "run.retrying",
+  "session_id": "my_session",
+  "run_id": "run_xxx",
+  "payload": {
+    "source": "provider",
+    "stage": "model.stream",
+    "attempt": 1,
+    "next_attempt": 2,
+    "max_retries": 10,
+    "max_attempts": 11,
+    "delay_ms": 734,
+    "error": "error sending request for url (...) ",
+    "retryable": true
+  }
+}
+```
+
+- 默认最多重试 10 次，可用环境变量 `AGENTKERNEL_PROVIDER_MAX_RETRIES` 覆盖；总尝试次数 = `max_retries + 1`。
+- 只对可恢复错误重试：超时、连接断开、408/409/429、5xx、529/overloaded、`x-should-retry: true` 等。
+- 业务端收到 `run.retrying` 时应展示“正在重试/上游波动”，不要立即判定本轮失败；最终仍以 `run.completed` / `run.failed` 为准。
 
 #### `run.failed` — 推理失败
 

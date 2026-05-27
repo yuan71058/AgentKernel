@@ -248,6 +248,8 @@ context.seed.clear ← 清空某类 / 全部 seeds
 
 Seed 是独立于消息历史的动态前置上下文块，默认不受消息裁剪规则影响。`context.seed.set` 只写入 seed，不会自动移动裁剪边界；需要隐藏旧历史时，业务端必须再显式调用 `context.trim.set`。
 
+协议适配时，Core 会把 seed 作为模型前置上下文处理。Claude 协议下 seed 会合并进顶层 `system`，不会进入 `messages[]`，避免触发 Claude Messages API 的 `messages[].role` 只允许 `user` / `assistant` 的限制。
+
 ### 8.6 消息裁剪
 
 
