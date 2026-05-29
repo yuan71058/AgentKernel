@@ -764,7 +764,7 @@ async def connect():
 }
 ```
 
-**成功响应**（已验证）:
+**成功响应**（列表响应只返回前端展示所需摘要；完整 schema 请用 `tool.get` 获取）:
 
 ```json
 {
@@ -778,52 +778,19 @@ async def connect():
       {
         "name": "calc_add",
         "description": "加法计算",
-        "input_schema": {
-          "type": "object",
-          "properties": { "a": { "type": "number" }, "b": { "type": "number" } },
-          "required": ["a", "b"]
-        },
-        "compiled_schemas": {
-          "claude": {
-            "type": "object",
-            "properties": { "a": { "type": "number" }, "b": { "type": "number" } },
-            "required": ["a", "b"]
-          },
-          "openai": {
-            "type": "object",
-            "properties": { "a": { "type": "number" }, "b": { "type": "number" } },
-            "required": ["a", "b"]
-          }
-        },
         "client_id": "unknown",
         "timeout_ms": 0,
         "tags": []
-      }
-    ],
-    "persisted_snapshot": [
-      {
-        "registration": {
-          "tool_name": "calc_add",
-          "description": "加法计算",
-          "client_id": "unknown",
-          "permissions": [],
-          "tags": [],
-          "timeout_ms": 0
-        },
-        "tool": {
-          "name": "calc_add",
-          "description": "加法计算",
-          "input_schema": {},
-          "compiled_schemas": {
-            "claude": { "type": "object", "properties": {}, "additionalProperties": true },
-            "openai": { "type": "object", "properties": {}, "additionalProperties": true }
-          }
-        }
       }
     ]
   }
 }
 ```
+
+说明：
+- `tool.list` 面向前端列表展示，只返回轻量摘要，避免 70+ 工具时重复传输大体积 schema。
+- `input_schema`、`compiled_schemas`、持久化快照等完整信息不在列表接口返回。
+- 需要查看单个工具完整定义时，调用 `tool.get`。
 
 ---
 

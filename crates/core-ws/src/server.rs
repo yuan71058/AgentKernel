@@ -912,11 +912,6 @@ async fn handle_tool_list(
     session_id: &str,
     request_id: &str,
 ) {
-    let persisted_snapshot = if !session_id.is_empty() {
-        scaffold.session_mgr.get_session_tools(session_id)
-    } else {
-        None
-    };
     let tools = scaffold.tool_manager.get_tools(session_id);
     let list: Vec<serde_json::Value> = tools.iter().map(|t| {
         let reg = scaffold.tool_manager.get_registration(session_id, &t.name);
@@ -924,8 +919,6 @@ async fn handle_tool_list(
         json!({
             "name": t.name,
             "description": t.description,
-            "input_schema": t.input_schema,
-            "compiled_schemas": t.compiled_schemas,
             "client_id": reg.as_ref().map(|r| r.client_id.as_str()).unwrap_or(""),
             "timeout_ms": reg.as_ref().map(|r| r.timeout_ms),
             "tags": reg.as_ref().map(|r| &r.tags).unwrap_or(&empty_tags),
@@ -936,7 +929,6 @@ async fn handle_tool_list(
         "session_id": session_id,
         "count": list.len(),
         "tools": list,
-        "persisted_snapshot": persisted_snapshot,
     })).await;
 }
 
