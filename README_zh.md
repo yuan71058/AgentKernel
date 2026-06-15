@@ -142,12 +142,12 @@ sequenceDiagram
 ```bash
 git clone https://github.com/cih1996/AgentKernel.git
 cd AgentKernel
-cargo run
+cargo run -p agentkernel-server --bin agentkernel
 ```
 
-- `cargo run` 启动的是**无前端的 Core 内核服务**
+- `cargo run -p agentkernel-server --bin agentkernel` 启动的是**无前端的 Core 内核服务**
 - 默认 WebSocket 地址：`ws://localhost:9991/ws`
-- 如果你的默认二进制不是服务端，也可以显式使用 `cargo run -p agentkernel-server`
+- 如果你已经在 `crates/server` 目录下，也可以直接使用 `cargo run --bin agentkernel`
 
 如果需要本地网页调试台，再单独启动：
 

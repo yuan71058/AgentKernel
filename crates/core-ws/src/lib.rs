@@ -62,6 +62,7 @@ pub mod commands {
     pub const SESSION_DELETE: &str = "session.delete";
     pub const SESSION_MESSAGES: &str = "session.messages";
     pub const SESSION_FORK: &str = "session.fork";
+    pub const SESSION_STATE: &str = "session.state";
     pub const CANCEL_RUN: &str = "run.cancel";
     pub const RUNTIME_SESSIONS: &str = "runtime.sessions";
 
@@ -81,6 +82,7 @@ pub mod commands {
     // ─── Events（断线补拉 + 订阅）──────────
     pub const EVENTS_PULL: &str = "events.pull";
     pub const EVENTS_SUBSCRIBE: &str = "events.subscribe";
+    pub const EVENTS_UNSUBSCRIBE: &str = "events.unsubscribe";
 
     // ─── System Prompt ─────────────────────
     pub const SYSTEM_PROMPT_GET: &str = "system_prompt.get";

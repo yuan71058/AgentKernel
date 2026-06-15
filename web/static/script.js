@@ -718,6 +718,7 @@ createApp({
         // 连接后只查询当前 session 状态，不自动注册工具
         loadSessions();
         loadSessionHistory();
+        loadSessionState();
         loadProvider();
         loadSystemPrompt();
         loadTools();
@@ -981,6 +982,39 @@ createApp({
             }
           }
 
+          // session.state 响应 → 恢复活跃 run 状态和 pending tools
+          if (msg.success && respCmd === 'session.state' && isCurrentSession(respSessionId)) {
+            const p = msg.payload || {};
+            if (p.active_run) {
+              currentRunId.value = p.active_run.run_id || '';
+              const runStatus = p.active_run.status || 'running';
+              if (!isTerminalRunStatus(currentRunStatus.value) || currentRunStatus.value === 'idle') {
+                currentRunStatus.value = runStatus;
+              }
+              if (['running', 'streaming'].includes(runStatus)) {
+                isStreaming.value = true;
+              }
+            }
+            if (Array.isArray(p.pending_tools) && p.pending_tools.length > 0) {
+              // 将 pending tools 注入到聊天视图，显示为正在执行中的工具链
+              const activeRunId = currentRunId.value;
+              const group = ensureActiveToolChainMessage(activeRunId);
+              for (const pt of p.pending_tools) {
+                if (!group.toolCalls.some(t => t.id === pt.call_id)) {
+                  group.toolCalls.push({
+                    id: pt.call_id,
+                    name: pt.tool_name,
+                    input: {},
+                    result: null,
+                    isError: false,
+                    status: 'pending',
+                  });
+                }
+              }
+              addLocalNotice('状态恢复', `检测到 ${p.pending_tools.length} 个工具仍在等待结果`);
+            }
+          }
+
           // session.send / session.retry 响应 → 如果 model.completed 还没来，用 response payload 兜底显示
           if (msg.success && (respCmd === 'session.send' || respCmd === 'session.retry') && msg.payload?.run_id && isCurrentSession(respSessionId)) {
             currentRunId.value = msg.payload.run_id;
@@ -1090,6 +1124,18 @@ createApp({
       const out = JSON.stringify(fullMsg);
       ws.send(out);
       addRawMessage('out', out);
+    }
+
+    /** 订阅当前 session 的实时事件（含其他连接发起的 send 产生的事件） */
+    function subscribeSessionEvents() {
+      if (!ws || !sessionId.value) return;
+      sendCommand('events.subscribe', { since_seq: 0 }, sessionId.value, { silentRaw: true });
+    }
+
+    /** 获取 session 状态快照：恢复活跃 run、pending tools 等 */
+    function loadSessionState() {
+      if (!ws || !sessionId.value) return;
+      sendCommand('session.state', {}, sessionId.value, { silentRaw: true });
     }
 
     function loadSessions() {
@@ -1233,6 +1279,7 @@ createApp({
       sessionId.value = id;
       resetSessionViewState();
       loadSessionHistory();
+      loadSessionState();
       loadProvider();
       loadSystemPrompt();
       loadTools();
@@ -2052,17 +2099,21 @@ createApp({
         }
         scrollToChat();
       }
-      // model.completed → 最终确认（不用 setTimeout，避免与 response 到达产生竞争）
+      // model.completed → 最终确认
+      // 不在这里 append 消息，统一由 response 处理器的 flushStreaming() 负责，
+      // 避免 model.completed 和 session.send response 竞态导致重复添加。
       if (type === 'model.completed' && payload.content) {
         if (!belongsToTrackedRun) return;
-        // 用最终 content 确保完整
+        // 用最终 content 确保流式文本完整
         if (payload.content) {
           streamingText.value = payload.content;
         }
-        isStreaming.value = false;
-        // 立即转为正式消息
-        appendAssistantMessage(streamingText.value || payload.content, now());
-        streamingText.value = '';
+        // 保留 isStreaming=true，让 response 到达时 flushStreaming() 能正确刷入
+        // 如果没有流式过程（isStreaming 仍为 false），直接添加兜底消息
+        if (!isStreaming.value) {
+          appendAssistantMessage(payload.content, now());
+          streamingText.value = '';
+        }
         streamingThinking.value = '';
         currentRunStatus.value = 'completed';
         scrollToChat();
@@ -2298,6 +2349,9 @@ createApp({
             'context.seed.delete': '删除 Seed 响应',
             'context.seed.clear': '清空 Seed 响应',
             'run.cancel': '取消推理响应',
+            'session.state': 'Session 状态快照响应',
+            'events.subscribe': '事件订阅响应',
+            'events.unsubscribe': '取消事件订阅响应',
           };
           let respLabel = cmdLabels[cmd] || '命令响应';
             if (cmd === 'session.send') {
@@ -2415,6 +2469,9 @@ createApp({
         'context.seed.delete':  () => ({ label: '删除 Seed', brief: `${sid} ${tag((p.seed_id||'').slice(0,16))}` }),
         'context.seed.clear':   () => ({ label: '清空 Seed', brief: `${sid} ${tag(p.kind || '全部')}` }),
         'run.cancel':           () => ({ label: '取消推理', brief: sid }),
+        'session.state':        () => ({ label: '获取 Session 状态', brief: sid }),
+        'events.subscribe':     () => ({ label: '订阅事件', brief: sid }),
+        'events.unsubscribe':   () => ({ label: '取消订阅事件', brief: sid }),
       };
       const factory = cmdMap[cmd];
       if (factory) return factory();
@@ -2569,7 +2626,7 @@ createApp({
       latestToolChainReport, latestTraceDetails, formatToolChainIds, toolChainStatusText, toolChainIssueCount,
       connect, disconnect, sendChat, retrySession, insertChatMessage, cancelCurrentRun, sendRaw, sendToolResult,
       defineClientTool, handleToolCallRequest,
-      loadSessions,
+      loadSessions, loadSessionState, subscribeSessionEvents,
       loadArchivedSessions,
       toggleArchivedSessions,
       selectSession, createNewSession, closeSession, archiveSession, unarchiveSession, deleteSession, forkSession,

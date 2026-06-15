@@ -64,5 +64,5 @@ coverage/
 
 tem/
 deploy.sh
-
+deploy-els.sh
 部署到fly.md
