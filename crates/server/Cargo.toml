@@ -3,6 +3,7 @@ name = "agentkernel-server"
 version.workspace = true
 edition.workspace = true
 description = "AgentKernel WS Server"
+default-run = "agentkernel"
 
 [[bin]]
 name = "agentkernel"

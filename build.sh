@@ -12,8 +12,10 @@ usage() {
   echo "选项:"
   echo "  (无)          编译本机版本（输出到 dist/${BINARY_NAME}-v${VERSION}）"
   echo "  --linux       Linux x86_64 静态二进制 (musl)"
+  echo "  --linux-arm   Linux aarch64 静态二进制 (musl)"
   echo "  --windows     Windows x86_64 exe (mingw)"
-  echo "  --all         本机 + Linux + Windows 全部编译"
+  echo "  --macos-arm   macOS aarch64 (Apple Silicon)"
+  echo "  --all         全平台编译"
   echo "  -o <dir>      自定义输出目录 (默认 dist/)"
   echo "  -h            显示帮助"
   exit 0
@@ -22,17 +24,21 @@ usage() {
 # ─── 参数解析 ─────────────────────────────
 BUILD_NATIVE=true
 BUILD_LINUX=false
+BUILD_LINUX_ARM=false
 BUILD_WINDOWS=false
+BUILD_MACOS_ARM=false
 OUTPUT_DIR="$PROJECT_DIR/dist"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --linux)    BUILD_NATIVE=false; BUILD_LINUX=true; shift ;;
-    --windows)  BUILD_NATIVE=false; BUILD_WINDOWS=true; shift ;;
-    --all)      BUILD_LINUX=true; BUILD_WINDOWS=true; shift ;;
-    -o)         OUTPUT_DIR="$2"; shift 2 ;;
-    -h|--help)  usage ;;
-    *)          echo "未知参数: $1"; usage ;;
+    --linux)      BUILD_NATIVE=false; BUILD_LINUX=true; shift ;;
+    --linux-arm)  BUILD_NATIVE=false; BUILD_LINUX_ARM=true; shift ;;
+    --windows)    BUILD_NATIVE=false; BUILD_WINDOWS=true; shift ;;
+    --macos-arm)  BUILD_NATIVE=false; BUILD_MACOS_ARM=true; shift ;;
+    --all)        BUILD_LINUX=true; BUILD_LINUX_ARM=true; BUILD_WINDOWS=true; BUILD_MACOS_ARM=true; shift ;;
+    -o)           OUTPUT_DIR="$2"; shift 2 ;;
+    -h|--help)    usage ;;
+    *)            echo "未知参数: $1"; usage ;;
   esac
 done
 
@@ -77,6 +83,44 @@ if [ "$BUILD_LINUX" = true ]; then
   build_ok=$((build_ok+1))
 fi
 
+# ─── Linux aarch64 ────────────────────────
+if [ "$BUILD_LINUX_ARM" = true ]; then
+  TARGET="aarch64-unknown-linux-musl"
+  OUT="$OUTPUT_DIR/${BINARY_NAME}-v${VERSION}-linux-arm64"
+
+  echo "🔨 交叉编译 Linux arm64 ($TARGET) v${VERSION}"
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc \
+  CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc \
+  cargo build --release --bin "$BINARY_NAME" --target "$TARGET"
+
+  BIN="target/$TARGET/release/$BINARY_NAME"
+  if [ ! -f "$BIN" ]; then echo "❌ Linux arm64 编译失败"; exit 1; fi
+  cp "$BIN" "$OUT"
+  chmod +x "$OUT"
+  SIZE=$(du -h "$OUT" | cut -f1)
+  echo "✅ Linux arm64: $OUT ($SIZE)"
+  echo ""
+  build_ok=$((build_ok+1))
+fi
+
+# ─── macOS aarch64 ────────────────────────
+if [ "$BUILD_MACOS_ARM" = true ]; then
+  TARGET="aarch64-apple-darwin"
+  OUT="$OUTPUT_DIR/${BINARY_NAME}-v${VERSION}-macos-arm64"
+
+  echo "🔨 交叉编译 macOS arm64 ($TARGET) v${VERSION}"
+  cargo build --release --bin "$BINARY_NAME" --target "$TARGET"
+
+  BIN="target/$TARGET/release/$BINARY_NAME"
+  if [ ! -f "$BIN" ]; then echo "❌ macOS arm64 编译失败"; exit 1; fi
+  cp "$BIN" "$OUT"
+  chmod +x "$OUT"
+  SIZE=$(du -h "$OUT" | cut -f1)
+  echo "✅ macOS arm64: $OUT ($SIZE)"
+  echo ""
+  build_ok=$((build_ok+1))
+fi
+
 # ─── Windows x86_64 ──────────────────────
 if [ "$BUILD_WINDOWS" = true ]; then
   TARGET="x86_64-pc-windows-gnu"
@@ -97,4 +141,5 @@ fi
 
 # ─── 完成 ─────────────────────────────────
 echo "📦 输出目录: $OUTPUT_DIR  ($build_ok 个构建)"
+echo "   版本: v${VERSION}"
 ls -lh "$OUTPUT_DIR"/${BINARY_NAME}* 2>/dev/null

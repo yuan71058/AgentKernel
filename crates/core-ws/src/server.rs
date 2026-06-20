@@ -266,6 +266,7 @@ impl WsServer {
         let scaffold = self.scaffold.clone();
         let comm_logger = self.comm_logger.clone();
         Router::new()
+            .route("/health", axum::routing::get(health_handler))
             .route("/ws", any(move |ws| {
                 let scaffold = scaffold.clone();
                 let comm_logger = comm_logger.clone();
@@ -284,6 +285,14 @@ impl WsServer {
         axum::serve(listener, app).await
             .map_err(|e| format!("server error: {}", e))
     }
+}
+
+async fn health_handler() -> axum::response::Json<serde_json::Value> {
+    axum::response::Json(json!({
+        "ok": true,
+        "service": "agentkernel",
+        "version": env!("CARGO_PKG_VERSION")
+    }))
 }
 
 async fn handle_ws_upgrade(
