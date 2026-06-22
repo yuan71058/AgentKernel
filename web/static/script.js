@@ -161,6 +161,7 @@ createApp({
     const isStreaming = ref(false);
     const currentRunId = ref('');
     const currentRunStatus = ref('idle');
+    const currentSubscribedSessionIds = ref([]);
 
     // 自动重连
     const autoReconnect = ref(true);
@@ -527,6 +528,11 @@ createApp({
       const normalized = String(text || '').trim();
       if (!normalized) return false;
       const lastMsg = chatMessages.value[chatMessages.value.length - 1];
+      if (lastMsg && lastMsg.role === 'assistant' && lastMsg._pendingEventEcho && String(lastMsg.text || '').trim() === normalized) {
+        lastMsg._pendingEventEcho = false;
+        if (meta) lastMsg.meta = meta;
+        return false;
+      }
       if (lastMsg && lastMsg.role === 'assistant' && String(lastMsg.text || '').trim() === normalized) {
         if (meta) lastMsg.meta = meta;
         return false;
@@ -537,6 +543,32 @@ createApp({
         return true;
       }
       chatMessages.value.push({ role: 'assistant', text: normalized, meta, runId: currentRunId.value || '' });
+      return true;
+    }
+
+    function appendUserMessage(text, meta = now(), options = {}) {
+      const normalized = String(text || '').trim();
+      if (!normalized && !options.allowEmpty) return false;
+      const lastMsg = chatMessages.value[chatMessages.value.length - 1];
+      if (lastMsg && lastMsg.role === 'user') {
+        if (options.messageId && lastMsg.messageId === options.messageId) {
+          if (meta) lastMsg.meta = meta;
+          return false;
+        }
+        if (lastMsg._pendingEventEcho && String(lastMsg.text || '').trim() === normalized) {
+          lastMsg._pendingEventEcho = false;
+          if (options.messageId) lastMsg.messageId = options.messageId;
+          if (meta) lastMsg.meta = meta;
+          return false;
+        }
+      }
+      chatMessages.value.push({
+        role: 'user',
+        text: normalized,
+        meta,
+        messageId: options.messageId || '',
+        runId: options.runId || currentRunId.value || '',
+      });
       return true;
     }
 
@@ -714,6 +746,7 @@ createApp({
 
       ws.onopen = () => {
         connected.value = true;
+        currentSubscribedSessionIds.value = [];
         addLocalNotice('WS', '连接建立');
         // 连接后只查询当前 session 状态，不自动注册工具
         loadSessions();
@@ -724,6 +757,7 @@ createApp({
         loadTools();
         loadContextPreview();
         loadRuntimeSessions();
+        subscribeSessionEvents();
       };
       ws.onclose = () => {
         pendingCommandWaiters.forEach(waiter => {
@@ -731,6 +765,7 @@ createApp({
         });
         pendingCommandWaiters.clear();
         connected.value = false;
+        currentSubscribedSessionIds.value = [];
         connectionId.value = '';
         currentRunId.value = '';
         currentRunStatus.value = 'idle';
@@ -784,6 +819,9 @@ createApp({
 
           if (!msg.success) {
             addLocalNotice('命令失败', `[${msg.request_id}] ${msg.payload?.error || '未知错误'}`);
+            if (respCmd === 'events.subscribe') {
+              currentSubscribedSessionIds.value = [];
+            }
             if (respCmd === 'session.send' && isCurrentSession(respSessionId)) {
               currentRunStatus.value = 'failed';
               streamingText.value = '';
@@ -924,6 +962,23 @@ createApp({
                 currentRunStatus.value = 'idle';
                 currentRunId.value = '';
               }
+            }
+          }
+
+          if (msg.success && respCmd === 'events.subscribe') {
+            const subscribed = Array.isArray(msg.payload?.session_ids)
+              ? msg.payload.session_ids.filter(id => typeof id === 'string' && id)
+              : (msg.payload?.session_id ? [msg.payload.session_id] : []);
+            currentSubscribedSessionIds.value = subscribed;
+          }
+          if (msg.success && respCmd === 'events.unsubscribe') {
+            if (msg.payload?.clear_all) {
+              currentSubscribedSessionIds.value = [];
+            } else {
+              const removed = Array.isArray(msg.payload?.removed_session_ids)
+                ? msg.payload.removed_session_ids
+                : (msg.payload?.session_id ? [msg.payload.session_id] : []);
+              currentSubscribedSessionIds.value = currentSubscribedSessionIds.value.filter(id => !removed.includes(id));
             }
           }
 
@@ -1129,7 +1184,9 @@ createApp({
     /** 订阅当前 session 的实时事件（含其他连接发起的 send 产生的事件） */
     function subscribeSessionEvents() {
       if (!ws || !sessionId.value) return;
+      if (currentSubscribedSessionIds.value.length === 1 && currentSubscribedSessionIds.value[0] === sessionId.value) return;
       sendCommand('events.subscribe', { since_seq: 0 }, sessionId.value, { silentRaw: true });
+      currentSubscribedSessionIds.value = [sessionId.value];
     }
 
     /** 获取 session 状态快照：恢复活跃 run、pending tools 等 */
@@ -1277,6 +1334,7 @@ createApp({
     function selectSession(id) {
       if (!id || id === sessionId.value) return;
       sessionId.value = id;
+      currentSubscribedSessionIds.value = [];
       resetSessionViewState();
       loadSessionHistory();
       loadSessionState();
@@ -1285,6 +1343,7 @@ createApp({
       loadTools();
       loadContextPreview();
       loadRuntimeSessions();
+      subscribeSessionEvents();
       addLocalNotice('会话', `已切换并加载 session: ${id}`);
     }
 
@@ -1620,7 +1679,7 @@ createApp({
 
       // 构建聊天区域显示
       const meta = now();
-      const msgEntry = { role: 'user', text, meta };
+      const msgEntry = { role: 'user', text, meta, _pendingEventEcho: true };
       if (images.length > 0) msgEntry.images = images.map(img => ({ name: img.name, dataUrl: img.dataUrl }));
       if (audio.length > 0) msgEntry.audioFiles = audio.map(a => ({ name: a.name, dataUrl: a.dataUrl, format: a.format, duration: a.duration }));
       chatMessages.value.push(msgEntry);
@@ -1673,7 +1732,21 @@ createApp({
       const out = JSON.stringify(fullMsg);
       ws.send(out);
       addRawMessage('out', out);
-      chatMessages.value.push({ role, text, meta: now() + ' [已插入]' });
+      if (role === 'user') {
+        appendUserMessage(text, now() + ' [已插入]', { allowEmpty: false });
+        const lastMsg = chatMessages.value[chatMessages.value.length - 1];
+        if (lastMsg && lastMsg.role === 'user' && String(lastMsg.text || '').trim() === text.trim()) {
+          lastMsg._pendingEventEcho = true;
+        }
+      } else {
+        const inserted = appendAssistantMessage(text, now() + ' [已插入]');
+        if (inserted) {
+          const lastMsg = chatMessages.value[chatMessages.value.length - 1];
+          if (lastMsg && lastMsg.role === 'assistant' && String(lastMsg.text || '').trim() === text.trim()) {
+            lastMsg._pendingEventEcho = true;
+          }
+        }
+      }
       chatInput.value = '';
       scrollToChat();
     }
@@ -2064,7 +2137,7 @@ createApp({
       }
       const belongsToTrackedRun = !eventRunId || !currentRunId.value || eventRunId === currentRunId.value;
       // tool.call.request → 统一工具调用入口；业务端只需要注册工具 execute(input, ctx)
-      if (type === 'tool.call.request') {
+        if (type === 'tool.call.request') {
         handleToolCallRequest(payload, eventSessionId);
         return;
       }
@@ -2082,6 +2155,21 @@ createApp({
         currentRunStatus.value = 'running';
         streamingThinking.value = '';
         return;
+      }
+      if (type === 'message.added') {
+        if (payload.role === 'user') {
+          const inserted = appendUserMessage(payload.content || '', now(), {
+            messageId: payload.message_id || '',
+            runId: eventRunId || currentRunId.value || '',
+          });
+          if (inserted) scrollToChat();
+          return;
+        }
+        if (payload.role === 'assistant') {
+          const inserted = appendAssistantMessage(payload.content || '', now());
+          if (inserted) scrollToChat();
+          return;
+        }
       }
       if (type === 'tool_chain.diagnosed') {
         latestToolChainReport.value = payload.report || null;
@@ -2176,6 +2264,7 @@ createApp({
         'session.archived': '会话归档',
         'session.unarchived': '会话恢复',
         'session.deleted': '会话永久删除',
+        'message.added': '消息已写入会话',
         'run.started': '推理任务开始',
         'run.cancelled': '推理任务中断',
         'run.completed': '推理任务结束',
@@ -2211,6 +2300,7 @@ createApp({
         case 'tool.registered': return `${tag(p.tool_name)} 客户端 ${tag(p.client_id || '—')}`;
         case 'session.created': return `标题 ${tag(p.title || (p.auto_created ? '自动创建' : '—'))}`;
         case 'session.closed': return p.reason ? `原因 ${tag(p.reason)}` : '会话关闭';
+        case 'message.added': return `${tag(p.role || 'message')} ${tag(text(p.content, 80))}`;
         case 'run.started': return `任务已进入运行队列：供应商 ${tag(p.provider || '—')} 模型 ${tag(p.model || '—')}`;
         case 'run.cancelled': return `${p.preserved ? tag('已保留部分输出') : tag('未保留输出')} 耗时 ${tag(p.duration_ms ? p.duration_ms + 'ms' : '—')}`;
         case 'run.completed': return `本轮任务结束：Token ${tag(p.total_tokens || '—')} 耗时 ${tag(p.duration_ms ? p.duration_ms + 'ms' : '—')}`;
@@ -2607,6 +2697,7 @@ createApp({
 
     return {
       wsUrl, connected, connectionId, sessionId,
+      currentSubscribedSessionIds,
       wsDropdownOpen, wsCustomMode, wsPresets, wsSelectLabel, selectWsPreset,
       selectedSessionId, sessions, archivedSessions, showArchivedSessions, activeSessionMenu,
       chatInput, chatMessages, pendingImages, pendingAudio, isRecording,

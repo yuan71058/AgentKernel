@@ -21,3 +21,4 @@ async-trait = { workspace = true }
 axum = { workspace = true }
 tokio-tungstenite = { workspace = true }
 futures = { workspace = true }
+include_dir = { workspace = true }

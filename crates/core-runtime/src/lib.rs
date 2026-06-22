@@ -688,6 +688,17 @@ impl AgentKernel {
             let user_msg = Message::new(&opts.session_id, Role::User, user_content);
             self.context_mgr.add_message(&opts.session_id, user_msg.clone());
             self.storage.save_message(&user_msg).await?;
+            self.event_bus.emit(
+                EventEnvelope::new(MESSAGE_ADDED, &opts.session_id)
+                    .with_run_id(&opts.run_id)
+                    .with_payload(serde_json::json!({
+                        "message_id": user_msg.message_id,
+                        "role": "user",
+                        "content": opts.message,
+                        "image_count": opts.images.len(),
+                        "audio_count": opts.audio.len(),
+                    })),
+            );
         }
 
         // 获取当前 session 可用工具：如果 session metadata 有工具快照，则按快照过滤；否则使用全局已注册工具

@@ -17,10 +17,12 @@ use core_runtime::{AgentKernel, ToolRouter};
 use axum::{
     Router,
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
-    response::IntoResponse,
-    routing::any,
+    http::{HeaderValue, StatusCode, header},
+    response::{IntoResponse, Response},
+    routing::{any, get},
 };
 use futures::{SinkExt, StreamExt};
+use include_dir::{Dir, include_dir};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -32,6 +34,8 @@ use tracing::{info, warn, debug};
 
 /// 连接级 session 订阅表：session_id → 事件转发任务的 AbortHandle
 type SessionSubscriptionTasks = HashMap<String, AbortHandle>;
+
+static WEB_STATIC_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../web/static");
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct SessionToolSnapshotItem {
@@ -272,6 +276,8 @@ impl WsServer {
                 let comm_logger = comm_logger.clone();
                 async move { handle_ws_upgrade(ws, scaffold, comm_logger).await }
             }))
+            .route("/", get(index_handler))
+            .route("/{*path}", get(static_asset_handler))
     }
 
     /// 启动 WS 服务器
@@ -293,6 +299,64 @@ async fn health_handler() -> axum::response::Json<serde_json::Value> {
         "service": "agentkernel",
         "version": env!("CARGO_PKG_VERSION")
     }))
+}
+
+async fn index_handler() -> Response {
+    static_asset_response("")
+}
+
+async fn static_asset_handler(axum::extract::Path(path): axum::extract::Path<String>) -> Response {
+    static_asset_response(&path)
+}
+
+fn static_asset_response(request_path: &str) -> Response {
+    let normalized = request_path.trim_start_matches('/');
+    let asset_path = if normalized.is_empty() {
+        "index.html"
+    } else {
+        normalized
+    };
+
+    if let Some(file) = WEB_STATIC_DIR.get_file(asset_path) {
+        return asset_file_response(file.contents(), content_type_for(asset_path));
+    }
+
+    if !asset_path.contains('.') {
+        if let Some(file) = WEB_STATIC_DIR.get_file("index.html") {
+            return asset_file_response(file.contents(), "text/html; charset=utf-8");
+        }
+    }
+
+    (
+        StatusCode::NOT_FOUND,
+        axum::response::Html("404 Not Found"),
+    )
+        .into_response()
+}
+
+fn asset_file_response(contents: &[u8], content_type: &'static str) -> Response {
+    let mut response = Response::new(axum::body::Body::from(contents.to_vec()));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(content_type),
+    );
+    response
+}
+
+fn content_type_for(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or_default() {
+        "html" => "text/html; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "js" => "application/javascript; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        _ => "application/octet-stream",
+    }
 }
 
 async fn handle_ws_upgrade(
@@ -322,7 +386,7 @@ async fn handle_connection(
 
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let (tx, mut rx) = mpsc::channel::<WsMessage>(256);
-    let sub_tasks: SessionSubscriptionTasks = HashMap::new();
+    let mut sub_tasks: SessionSubscriptionTasks = HashMap::new();
 
     // 发送连接确认
     let hello = WsMessage::Response {
@@ -363,6 +427,7 @@ async fn handle_connection(
                 commands::TOOL_GET,
                 "tool.execute.result",
                 commands::SESSION_STATE,
+                commands::EVENTS_SUBSCRIBE,
                 commands::EVENTS_UNSUBSCRIBE,
             ]
         }),
@@ -420,23 +485,22 @@ async fn handle_connection(
 
         let tx_clone = tx.clone();
         let scaffold = scaffold.clone();
-        let mut sub_tasks = sub_tasks.clone();
 
         match command.as_str() {
             commands::SEND_MESSAGE => {
                 let sid = session_id.clone();
                 let rid = request_id.clone();
-                let st = sub_tasks.clone();
+                let suppress_run_forward = sub_tasks.contains_key(&sid);
                 tokio::spawn(handle_send_message(
-                    scaffold, tx_clone, sid, rid, payload, st,
+                    scaffold, tx_clone, sid, rid, payload, suppress_run_forward,
                 ));
             }
             commands::SESSION_RETRY => {
                 let sid = session_id.clone();
                 let rid = request_id.clone();
-                let st = sub_tasks.clone();
+                let suppress_run_forward = sub_tasks.contains_key(&sid);
                 tokio::spawn(handle_session_retry(
-                    scaffold, tx_clone, sid, rid, payload, st,
+                    scaffold, tx_clone, sid, rid, payload, suppress_run_forward,
                 ));
             }
             commands::MESSAGE_INSERT => {
@@ -577,10 +641,9 @@ async fn handle_connection(
                 handle_events_pull(&scaffold, &tx_clone, &session_id, &request_id, &payload).await;
             }
             commands::EVENTS_SUBSCRIBE => {
-                let st = sub_tasks.clone();
                 handle_events_subscribe(
-                    scaffold.clone(), tx_clone.clone(),
-                    &session_id, &request_id, &payload, st,
+                    scaffold.clone(), &tx_clone,
+                    &session_id, &request_id, &payload, &mut sub_tasks,
                 ).await;
             }
             commands::EVENTS_UNSUBSCRIBE => {
@@ -748,7 +811,7 @@ async fn handle_send_message(
     session_id: String,
     request_id: String,
     payload: serde_json::Value,
-    _sub_tasks: SessionSubscriptionTasks,
+    suppress_run_forward: bool,
 ) {
     let message = payload["message"].as_str().unwrap_or("");
     let max_repeated_tool_calls = payload["max_repeated_tool_calls"].as_u64().unwrap_or(10) as u32;
@@ -789,7 +852,11 @@ async fn handle_send_message(
     // 订阅事件流（在 chat 启动前）
     // 注意：不在此处注册 session 级订阅，避免与 forward_run_events 重复推送。
     // session 级订阅由前端通过 events.subscribe 命令单独注册。
-    let event_forwarder = forward_run_events(&scaffold, &tx, &session_id, &run_id).await;
+    let event_forwarder = if suppress_run_forward {
+        None
+    } else {
+        Some(forward_run_events(&scaffold, &tx, &session_id, &run_id).await)
+    };
 
     // 执行对话
     let opts = core_runtime::ChatOptions {
@@ -806,7 +873,9 @@ async fn handle_send_message(
     // 先让 forwarder 有机会把最后的 model.completed / run.completed / error 事件刷到 WS，
     // 再停止转发任务，避免终态事件被提前中断丢失。
     tokio::task::yield_now().await;
-    event_forwarder.abort();
+    if let Some(event_forwarder) = event_forwarder {
+        event_forwarder.abort();
+    }
 
     match result {
         Ok(resp) => {
@@ -836,7 +905,7 @@ async fn handle_session_retry(
     session_id: String,
     request_id: String,
     payload: serde_json::Value,
-    _sub_tasks: SessionSubscriptionTasks,
+    suppress_run_forward: bool,
 ) {
     let max_repeated_tool_calls = payload["max_repeated_tool_calls"].as_u64().unwrap_or(10) as u32;
 
@@ -854,11 +923,17 @@ async fn handle_session_retry(
     }
 
     let run_id = format!("run_{}", uuid::Uuid::new_v4());
-    let event_forwarder = forward_run_events(&scaffold, &tx, &session_id, &run_id).await;
+    let event_forwarder = if suppress_run_forward {
+        None
+    } else {
+        Some(forward_run_events(&scaffold, &tx, &session_id, &run_id).await)
+    };
 
     let result = scaffold.retry_session(&session_id, &run_id, max_repeated_tool_calls).await;
     tokio::task::yield_now().await;
-    event_forwarder.abort();
+    if let Some(event_forwarder) = event_forwarder {
+        event_forwarder.abort();
+    }
 
     match result {
         Ok(resp) => {
@@ -958,6 +1033,15 @@ async fn handle_message_insert(
         send_err(tx, request_id, &format!("save failed: {}", e)).await;
         return;
     }
+
+    scaffold.event_bus.emit(
+        EventEnvelope::new(MESSAGE_ADDED, session_id).with_payload(json!({
+            "message_id": message_id,
+            "session_id": session_id,
+            "role": role_str,
+            "content": content_str,
+        })),
+    );
 
     info!(session_id = %session_id, message_id = %message_id, role = ?role, "message inserted");
     send_ok(tx, request_id, json!({
@@ -1462,44 +1546,77 @@ async fn handle_events_pull(
 /// events.subscribe — 订阅实时事件流：补拉历史 + 注册连接级实时推送
 async fn handle_events_subscribe(
     scaffold: Arc<AgentKernel>,
-    tx: mpsc::Sender<WsMessage>,
+    tx: &mpsc::Sender<WsMessage>,
     session_id: &str,
     request_id: &str,
     payload: &serde_json::Value,
-    mut sub_tasks: SessionSubscriptionTasks,
+    sub_tasks: &mut SessionSubscriptionTasks,
 ) {
-    if session_id.is_empty() {
-        send_err(&tx, request_id, "session_id is required for events.subscribe").await;
+    let target_session_ids = resolve_subscription_session_ids(session_id, payload);
+    if target_session_ids.is_empty() {
+        send_err(tx, request_id, "session_id or payload.session_ids is required for events.subscribe").await;
+        return;
+    }
+
+    let mode = payload["mode"].as_str().unwrap_or("replace");
+    if mode != "replace" {
+        send_err(tx, request_id, "events.subscribe currently only supports payload.mode='replace'").await;
         return;
     }
 
     let since_seq = payload["since_seq"].as_u64().unwrap_or(0);
-    let current_seq = scaffold.event_bus.current_seq(session_id);
+    let mut current_seq_map = serde_json::Map::new();
+    let mut replayed_counts = serde_json::Map::new();
 
     // 1. 断线补拉
-    if since_seq > 0 && since_seq < current_seq {
-        let missed = scaffold.event_bus.pull_since(session_id, since_seq);
-        for evt in &missed {
-            let _ = tx.send(WsMessage::Event(evt.clone())).await;
+    for target_session_id in &target_session_ids {
+        let current_seq = scaffold.event_bus.current_seq(target_session_id);
+        current_seq_map.insert(target_session_id.clone(), json!(current_seq));
+
+        let mut replayed = 0u64;
+        if since_seq > 0 && since_seq < current_seq {
+            let missed = scaffold.event_bus.pull_since(target_session_id, since_seq);
+            replayed = missed.len() as u64;
+            for evt in &missed {
+                let _ = tx.send(WsMessage::Event(evt.clone())).await;
+            }
+            info!(session_id = %target_session_id, missed = missed.len(), "replayed missed events");
         }
-        info!(session_id = %session_id, missed = missed.len(), "replayed missed events");
+        replayed_counts.insert(target_session_id.clone(), json!(replayed));
     }
 
-    // 2. 注册连接级实时事件转发
-    let already_subscribed = sub_tasks.contains_key(session_id);
+    // 2. 覆盖式订阅：同一 WS 连接用新的 session 集合替换旧集合。
+    let replaced_sessions: Vec<String> = sub_tasks.keys().cloned().collect();
+    let already_subscribed = same_session_id_set(&replaced_sessions, &target_session_ids);
     if !already_subscribed {
-        let handle = forward_session_events(&scaffold, &tx, session_id);
-        sub_tasks.insert(session_id.to_string(), handle);
-        info!(session_id = %session_id, "session event subscription registered");
+        clear_all_session_subscriptions(sub_tasks);
+        for target_session_id in &target_session_ids {
+            let handle = forward_session_events(&scaffold, tx, target_session_id);
+            sub_tasks.insert(target_session_id.to_string(), handle);
+        }
+        info!(session_ids = ?target_session_ids, replaced = ?replaced_sessions, "session event subscriptions registered");
     }
 
-    send_ok(&tx, request_id, json!({
-        "session_id": session_id,
+    send_ok(tx, request_id, json!({
+        "session_id": if target_session_ids.len() == 1 { target_session_ids[0].clone() } else { String::new() },
+        "session_ids": target_session_ids,
         "subscribed": true,
         "already_subscribed": already_subscribed,
+        "mode": "replace",
+        "replaced_session_ids": if already_subscribed { Vec::<String>::new() } else { replaced_sessions },
         "since_seq": since_seq,
-        "current_seq": current_seq,
-        "replayed": if since_seq > 0 { current_seq.saturating_sub(since_seq) } else { 0 },
+        "current_seq": if current_seq_map.len() == 1 {
+            current_seq_map.values().next().cloned().unwrap_or(json!(0))
+        } else {
+            serde_json::Value::Object(current_seq_map.clone())
+        },
+        "current_seq_by_session": serde_json::Value::Object(current_seq_map),
+        "replayed": if replayed_counts.len() == 1 {
+            replayed_counts.values().next().cloned().unwrap_or(json!(0))
+        } else {
+            serde_json::Value::Object(replayed_counts.clone())
+        },
+        "replayed_by_session": serde_json::Value::Object(replayed_counts),
     })).await;
 }
 
@@ -1509,18 +1626,44 @@ async fn handle_events_unsubscribe(
     tx: &mpsc::Sender<WsMessage>,
     session_id: &str,
     request_id: &str,
-    _payload: &serde_json::Value,
+    payload: &serde_json::Value,
 ) {
-    if session_id.is_empty() {
-        send_err(tx, request_id, "session_id is required for events.unsubscribe").await;
+    let target_session_ids = resolve_subscription_session_ids(session_id, payload);
+    let clear_all = payload["clear_all"].as_bool().unwrap_or(false);
+
+    if clear_all {
+        let removed_session_ids: Vec<String> = sub_tasks.keys().cloned().collect();
+        clear_all_session_subscriptions(sub_tasks);
+        send_ok(tx, request_id, json!({
+            "session_id": "",
+            "session_ids": removed_session_ids.clone(),
+            "unsubscribed": true,
+            "was_subscribed": !removed_session_ids.is_empty(),
+            "clear_all": true,
+        })).await;
         return;
     }
-    let removed = unsubscribe_session(sub_tasks, session_id);
-    info!(session_id = %session_id, removed, "session event subscription removed");
+
+    if target_session_ids.is_empty() {
+        send_err(tx, request_id, "session_id or payload.session_ids is required for events.unsubscribe").await;
+        return;
+    }
+
+    let mut removed_session_ids = Vec::new();
+    for target_session_id in &target_session_ids {
+        if unsubscribe_session(sub_tasks, target_session_id) {
+            removed_session_ids.push(target_session_id.clone());
+        }
+    }
+    let removed = !removed_session_ids.is_empty();
+    info!(session_ids = ?target_session_ids, removed = ?removed_session_ids, "session event subscriptions removed");
     send_ok(tx, request_id, json!({
-        "session_id": session_id,
+        "session_id": if target_session_ids.len() == 1 { target_session_ids[0].clone() } else { String::new() },
+        "session_ids": target_session_ids,
         "unsubscribed": true,
         "was_subscribed": removed,
+        "removed_session_ids": removed_session_ids,
+        "clear_all": false,
     })).await;
 }
 
@@ -1531,6 +1674,46 @@ fn unsubscribe_session(sub_tasks: &mut SessionSubscriptionTasks, session_id: &st
     } else {
         false
     }
+}
+
+fn clear_all_session_subscriptions(sub_tasks: &mut SessionSubscriptionTasks) {
+    for (_, handle) in sub_tasks.drain() {
+        handle.abort();
+    }
+}
+
+fn resolve_subscription_session_ids(session_id: &str, payload: &serde_json::Value) -> Vec<String> {
+    let mut session_ids = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Some(values) = payload["session_ids"].as_array() {
+        for value in values {
+            if let Some(session_id) = value.as_str() {
+                let trimmed = session_id.trim();
+                if !trimmed.is_empty() && seen.insert(trimmed.to_string()) {
+                    session_ids.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    if session_ids.is_empty() {
+        let trimmed = session_id.trim();
+        if !trimmed.is_empty() {
+            session_ids.push(trimmed.to_string());
+        }
+    }
+
+    session_ids
+}
+
+fn same_session_id_set(existing: &[String], target: &[String]) -> bool {
+    if existing.len() != target.len() {
+        return false;
+    }
+    let existing_set: HashSet<&str> = existing.iter().map(|value| value.as_str()).collect();
+    let target_set: HashSet<&str> = target.iter().map(|value| value.as_str()).collect();
+    existing_set == target_set
 }
 
 /// session.state — 获取 session 当前完整状态快照（用于页面刷新后快速恢复）

@@ -104,6 +104,7 @@
               <div class="stats-panel" style="margin-top:12px">
                 <div class="stat-row"><span class="stat-label">连接状态</span><span class="stat-value" :style="{color: connected ? 'var(--green)' : 'var(--red)'}">{{ connected ? '已连接' : '未连接' }}</span></div>
                 <div class="stat-row"><span class="stat-label">Session ID</span><span class="stat-value" style="font-size:11px;font-family:ui-monospace,monospace">{{ sessionId }}</span></div>
+                <div class="stat-row"><span class="stat-label">订阅会话</span><span class="stat-value" style="font-size:11px;font-family:ui-monospace,monospace">{{ currentSubscribedSessionIds.length ? currentSubscribedSessionIds.join(', ') : '—' }}</span></div>
                 <div class="stat-row"><span class="stat-label">当前 Run</span><span class="stat-value" style="font-size:11px;font-family:ui-monospace,monospace">{{ currentRunId || '—' }}</span></div>
                 <div class="stat-row"><span class="stat-label">Run 状态</span><span class="stat-value">{{ runStatusLabel(currentRunStatus) }}</span></div>
                 <div class="stat-row"><span class="stat-label">会话消息数</span><span class="stat-value">{{ chatMessages.length }}</span></div>
@@ -111,6 +112,7 @@
                 <div class="stat-row"><span class="stat-label">通讯日志</span><span class="stat-value">{{ rawMessages.length }}</span></div>
                 <div class="stat-row"><span class="stat-label">已注册工具</span><span class="stat-value">{{ tools.length }}</span></div>
               </div>
+              <div class="config-hint" style="margin-top:10px">当前测试页会在连接建立和切换会话时，自动以 replace 模式订阅当前 session 的实时事件；服务端现在也支持一次订阅多个 session。</div>
             </div>
 
             <div class="config-section">
@@ -1001,6 +1003,7 @@
           <div class="stat-row"><span class="stat-label">连接状态</span><span class="stat-value" :style="{color: connected ? 'var(--green)' : 'var(--red)'}">{{ connected ? '已连接' : '未连接' }}</span></div>
           <div class="stat-row"><span class="stat-label">Connection ID</span><span class="stat-value" style="font-size:11px;font-family:ui-monospace,monospace">{{ connectionId || '—' }}</span></div>
           <div class="stat-row"><span class="stat-label">Session ID</span><span class="stat-value" style="font-size:11px;font-family:ui-monospace,monospace">{{ sessionId }}</span></div>
+          <div class="stat-row"><span class="stat-label">订阅会话</span><span class="stat-value" style="font-size:11px;font-family:ui-monospace,monospace">{{ currentSubscribedSessionIds.length ? currentSubscribedSessionIds.join(', ') : '—' }}</span></div>
           <div class="stat-row"><span class="stat-label">当前 Run</span><span class="stat-value" style="font-size:11px;font-family:ui-monospace,monospace">{{ currentRunId || '—' }}</span></div>
           <div class="stat-row"><span class="stat-label">Run 状态</span><span class="stat-value">{{ runStatusLabel(currentRunStatus) }}</span></div>
           <div class="stat-row"><span class="stat-label">收到事件数</span><span class="stat-value">{{ events.length }}</span></div>

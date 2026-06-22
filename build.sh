@@ -4,7 +4,20 @@ set -euo pipefail
 # ─── 配置 ─────────────────────────────────
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BINARY_NAME="agentkernel"
-VERSION="$(cargo metadata --manifest-path "$PROJECT_DIR/Cargo.toml" --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+VERSION="$(python3 - "$PROJECT_DIR/Cargo.toml" <<'PY'
+import pathlib
+import sys
+
+cargo_toml = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
+
+data = tomllib.loads(cargo_toml)
+print(data["workspace"]["package"]["version"])
+PY
+)"
 
 usage() {
   echo "用法: ./build.sh [选项]"

@@ -17,6 +17,7 @@ pub mod event_types {
     pub const SESSION_ARCHIVED: &str = "session.archived";
     pub const SESSION_UNARCHIVED: &str = "session.unarchived";
     pub const SESSION_DELETED: &str = "session.deleted";
+    pub const MESSAGE_ADDED: &str = "message.added";
     pub const RUN_STARTED: &str = "run.started";
     pub const RUN_RETRYING: &str = "run.retrying";
     pub const RUN_CANCELLED: &str = "run.cancelled";
